@@ -31,20 +31,34 @@ Python-библиотеки из `requirements.txt`:
 
 ## Запуск через Docker
 
-В корне проекта создайте файл с настройками:
+В корне проекта создайте файл с настройками. В macOS и Linux:
 
 ```bash
 cp .env.example .env
 ```
 
+В Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
 Откройте `.env` и укажите `MAX_BOT_TOKEN`. Для ИИ заполните `GIGACHAT_AUTH_KEY`. 
 
-Соберите образ и запустите контейнер:
+Соберите образ и запустите контейнер в macOS или Linux:
 
 ```bash
 docker build -t olimpnavigator-max .
 mkdir -p data
 docker run --rm --name olimpnavigator-max --env-file .env -p 8080:8080 -v "$(pwd)/data:/app/data" olimpnavigator-max
+```
+
+В Windows PowerShell:
+
+```powershell
+docker build -t olimpnavigator-max .
+New-Item -ItemType Directory -Force data | Out-Null
+docker run --rm --name olimpnavigator-max --env-file .env -p 8080:8080 -v "${PWD}\data:/app/data" olimpnavigator-max
 ```
 
 Бот работает, пока запущен контейнер. Остановить его можно сочетанием `Ctrl+C`. Каталог, профили и достижения хранятся в папке `data`, поэтому после нового запуска они сохранятся.
@@ -69,11 +83,18 @@ MAX_BOT_TOKEN = "токен_бота_MAX"
 GIGACHAT_AUTH_KEY = "ключ_GigaChat_или_пустая_строка"
 ```
 
-Если ключа GigaChat нет, задайте `GIGACHAT_AUTH_KEY = ""`. Команда `pip install -r requirements.txt` установит библиотеки в версиях, указанных в файле. После этого запустите бота:
+Если ключа GigaChat нет, задайте `GIGACHAT_AUTH_KEY = ""`. Команда `pip install -r requirements.txt` установит библиотеки в версиях, указанных в файле. В macOS и Linux запустите бота так:
 
 ```bash
 python3 -m pip install -r requirements.txt
 python3 main.py
+```
+
+В Windows PowerShell используйте Python Launcher:
+
+```powershell
+py -3 -m pip install -r requirements.txt
+py -3 main.py
 ```
 
 ## Проверка работы
