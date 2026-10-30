@@ -1,0 +1,7 @@
+max_token.py
+*.sqlite3*
+*.log
+__pycache__/
+.env
+.git/
+.github/
