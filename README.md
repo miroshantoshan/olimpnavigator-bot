@@ -45,7 +45,23 @@ Copy-Item .env.example .env
 
 Откройте `.env` и укажите `MAX_BOT_TOKEN`. Для ИИ заполните `GIGACHAT_AUTH_KEY`. 
 
-Соберите образ и запустите контейнер в macOS или Linux:
+Готовый образ можно скачать с [Docker Hub](https://hub.docker.com/r/miroshan/olimpnavigator-bot). В macOS или Linux запустите его так:
+
+```bash
+docker pull miroshan/olimpnavigator-bot:latest
+mkdir -p data
+docker run --rm --name olimpnavigator-max --env-file .env -p 8080:8080 -v "$(pwd)/data:/app/data" miroshan/olimpnavigator-bot:latest
+```
+
+В Windows PowerShell:
+
+```powershell
+docker pull miroshan/olimpnavigator-bot:latest
+New-Item -ItemType Directory -Force data | Out-Null
+docker run --rm --name olimpnavigator-max --env-file .env -p 8080:8080 -v "${PWD}\data:/app/data" miroshan/olimpnavigator-bot:latest
+```
+
+Для сборки образа из исходников в macOS или Linux:
 
 ```bash
 docker build -t olimpnavigator-max .
@@ -53,7 +69,7 @@ mkdir -p data
 docker run --rm --name olimpnavigator-max --env-file .env -p 8080:8080 -v "$(pwd)/data:/app/data" olimpnavigator-max
 ```
 
-В Windows PowerShell:
+Для сборки образа из исходников в Windows PowerShell:
 
 ```powershell
 docker build -t olimpnavigator-max .
