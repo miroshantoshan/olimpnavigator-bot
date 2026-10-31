@@ -15,6 +15,17 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from aiohttp import web
 
+env_file = Path(__file__).with_name('.env')
+if env_file.is_file():
+    for line in env_file.read_text(encoding='utf-8').splitlines():
+        if '=' not in line or line.lstrip().startswith('#'):
+            continue
+        name, value = line.split('=', 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        os.environ.setdefault(name.strip(), value)
+
 from collect import collect_all
 from core import (INTERESTS, POINTS, REGIONS, achievements_for, add_achievement, all_events,
                   due_notifications, ensure_user, get_event, get_user, import_events,
