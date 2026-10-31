@@ -30,6 +30,7 @@ if env_file.is_file():
 
 from collect import collect_all
 from core import (INTERESTS, POINTS, REGIONS, achievements_for, add_achievement, ai_messages_today, all_events,
+                  create_custom_event,
                   due_notifications, end_ai_session, ensure_user, get_ai_session, get_event, get_user, import_events,
                   init_db, is_tracked, leaderboard, mark_admin_delivered, mark_sent,
                   matches, pending_reviews_for, recommended, remember_name, review_achievement,
@@ -470,12 +471,14 @@ async def achievement_pick(uid, page=0):
     page = max(0, min(page, last))
     rows = [[btn(event['title'][:55], f'result_begin:{event["id"]}')]
             for event in events[page * PAGE:(page + 1) * PAGE]]
+    rows.append([btn('✍️ Написать свою олимпиаду или конкурс', 'achievement_custom')])
     if last:
         rows.append([btn('←', f'achievement_pick:{page-1}'),
                      btn(f'{page+1}/{last+1}', 'noop'),
                      btn('→', f'achievement_pick:{page+1}')])
     return await send(uid, f'<b>➕ Добавить достижение</b>\n\n'
-                           f'Выбери мероприятие из каталога: <b>{len(events)}</b> 🏆',
+                           f'Выбери мероприятие из каталога: <b>{len(events)}</b> 🏆\n'
+                           'Или добавь своё название 👇',
                       screen(rows, back='portfolio'), 'portfolio')
 
 async def assistant(uid, eid=None):
@@ -542,6 +545,20 @@ async def callback_action(uid, action, mid=None):
                           [[btn('❌ Завершить диалог', 'assistant_finish')]])
     if action.startswith('achievement_pick:'):
         return await achievement_pick(uid, int(action.partition(':')[2]))
+    if action == 'achievement_custom':
+        st['stage'] = None
+        return await send(uid, '<b>✍️ Своё мероприятие</b>\n\nЧто ты хочешь добавить?',
+                          screen([[btn('🏆 Олимпиаду', 'achievement_kind:олимпиада'),
+                                   btn('🎯 Конкурс', 'achievement_kind:конкурс')]],
+                                 back='achievement_pick:0'), 'portfolio')
+    if action.startswith('achievement_kind:'):
+        kind = action.partition(':')[2]
+        if kind not in ('олимпиада', 'конкурс'):
+            return await achievement_pick(uid)
+        st['custom_kind'] = kind
+        st['stage'] = 'custom_title'
+        return await send(uid, f'<b>✍️ {kind.capitalize()}</b>\n\nНапиши название одним сообщением.',
+                          screen(back='achievement_custom'), 'portfolio')
     if action == 'assistant_finish':
         end_ai_session(uid)
         st['stage'] = None
@@ -704,7 +721,8 @@ async def callback_action(uid, action, mid=None):
         return await send(uid, '✅ Данные удалены.', screen(back='home'))
     if action.startswith('result_begin:'):
         eid = action.partition(':')[2]
-        if not get_event(eid):
+        event = get_event(eid)
+        if not event or (event.get('custom') and event.get('owner_id') != uid):
             return await portfolio(uid)
         if not ADMIN_IDS:
             return await more(uid, eid)
@@ -800,6 +818,13 @@ async def message(uid, message):
         update_user(uid, school=text[:150])
         st['stage'] = None
         return await profile(uid)
+    if st.get('stage') == 'custom_title':
+        if not text:
+            return await send(uid, '✍️ Напиши название олимпиады или конкурса одним сообщением.',
+                              screen(back='achievement_custom'))
+        eid = create_custom_event(uid, text, st['custom_kind'])
+        st['stage'] = None
+        return await callback_action(uid, f'result_begin:{eid}')
     if st.get('stage') == 'result_file':
         for item in attachments:
             kind = item.get('type')

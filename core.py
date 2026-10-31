@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 from contextlib import closing, contextmanager
@@ -282,10 +283,31 @@ def get_event(event_id: str, path: Path = DB_PATH) -> dict | None:
     return json.loads(row["payload"]) if row else None
 
 
+def create_custom_event(tg_id: int, title: str, kind: str, path: Path = DB_PATH) -> str:
+    if kind not in ('олимпиада', 'конкурс'):
+        raise ValueError('Неверный тип мероприятия')
+    title = ' '.join(title.split())[:150]
+    if not title:
+        raise ValueError('Название не указано')
+    digest = hashlib.sha256(f'{tg_id}:{kind}:{title.casefold()}'.encode()).hexdigest()[:24]
+    event_id = f'custom_{tg_id}_{digest}'
+    event = {'id': event_id, 'title': title, 'kind': kind, 'rsosh_level': None,
+             'custom': True, 'owner_id': tg_id}
+    with connect(path) as db:
+        db.execute('INSERT OR IGNORE INTO events(id,payload,updated_at) VALUES(?,?,?)',
+                   (event_id, json.dumps(event, ensure_ascii=False), datetime.now().isoformat(timespec='seconds')))
+    return event_id
+
+
 def all_events(path: Path = DB_PATH) -> list[dict]:
     with connect(path) as db:
         rows = db.execute("SELECT payload FROM events").fetchall()
-    return [json.loads(row["payload"]) for row in rows]
+    events = []
+    for row in rows:
+        event = json.loads(row['payload'])
+        if not event.get('custom'):
+            events.append(event)
+    return events
 
 
 def matches(event: dict, user: dict) -> bool:
