@@ -9,6 +9,7 @@ import logging
 import os
 import sqlite3
 from contextlib import AsyncExitStack, suppress
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -86,7 +87,6 @@ def screen(rows=None, *, back=None):
     out = list(rows or [])
     if back:
         out.append([btn('← Назад', back)])
-    out += nav()
     return out
 
 
@@ -140,14 +140,17 @@ def filter_events(events, filtry, user):
 
 
 API = None
+EDIT_TARGET = ContextVar('edit_target', default=None)
 
 
 async def send(uid, text, rows=None, image=None, *, edit=None, extra=None):
-    if edit and extra is None:
+    current = EDIT_TARGET.get()
+    target = edit or (current[1] if current and current[0] == uid else None)
+    if target and extra is None:
         edited = False
         result = None
         with suppress(MaxAPIError, aiohttp.ClientError, asyncio.TimeoutError):
-            result = await API.edit(edit, text, rows, BANNERS.get(image) if image else None)
+            result = await API.edit(target, text, rows, BANNERS.get(image) if image else None)
             edited = True
         if edited:
             return result
@@ -190,7 +193,7 @@ async def number(uid, field, setup=False, edit=None):
         rows.append(row)
     rows.append([btn('✅ Подтвердить', f'confirm:{field}')])
     return await send(uid, f'<b>🎓 Выбери {nazvanie}</b>\n\nНажми вариант и подтверди 👇',
-                           screen(rows, back='profile' if not setup else 'home'), edit=edit)
+                           screen(rows, back='profile' if not setup else ('home' if field == 'grade' else None)), edit=edit)
 
 async def regions(uid, page=0, edit=None):
     st = state(uid)
@@ -440,6 +443,15 @@ async def save_result(uid, file_token=None, file_kind=None, file_name=None):
     await notify_admins()
 
 async def callback(uid, action, mid=None):
+    target = None if action == 'home' or not mid else (uid, mid)
+    token = EDIT_TARGET.set(target)
+    try:
+        return await callback_action(uid, action, mid)
+    finally:
+        EDIT_TARGET.reset(token)
+
+
+async def callback_action(uid, action, mid=None):
     st = state(uid)
     sections = [item[1] for item in MENU]
     card_navigation = action.startswith(('page:', 'open:', 'more:', 'toggle:'))
@@ -623,7 +635,8 @@ async def callback(uid, action, mid=None):
                             if decision == 'yes' else '❌ Результат отклонён. Проверь документ и отправь снова.',
                             screen(back='portfolio'))
             return await send(uid, '✅ Проверка выполнена.', screen(back='home'))
-    return await send(uid, '🤔 Я ещё не знаю такой команды. Выбери раздел ниже 👇', nav())
+    return await send(uid, '🤔 Я ещё не знаю такой команды. Вернись на главную 👇',
+                      screen(back='home'))
 
 async def message(uid, message):
     body = message.get('body') or {}
@@ -683,7 +696,8 @@ async def message(uid, message):
     if text.startswith('/import') and uid in ADMIN_IDS:
         return await send(uid, '📦 Пришли JSON-файл с подписью /import.',
                                screen(back='home'))
-    return await send(uid, '🤔 Я ещё не знаю такой команды. Выбери раздел ниже 👇', nav())
+    return await send(uid, '🤔 Я ещё не знаю такой команды. Выбери раздел на главной 👇',
+                      screen(back='home'))
 
 async def handle_update(event):
     typ = event.get('update_type')
