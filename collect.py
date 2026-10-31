@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import re
 import time
 from contextlib import suppress
@@ -15,7 +14,6 @@ from bs4 import BeautifulSoup
 
 from core import import_events, init_db, validate_event
 
-LOG = logging.getLogger(__name__)
 HEADERS = {"User-Agent": "OlimpNavigator/1.0 (+educational event discovery)"}
 MONTHS = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5,
           "июн": 6, "июл": 7, "август": 8, "сентябр": 9, "октябр": 10,
@@ -472,7 +470,6 @@ def collect_all(today: date | None = None) -> list[dict]:
     for collector in COLLECTORS:
         with suppress(requests.RequestException, ValueError, KeyError, AttributeError):
             found = collector(session, today)
-            LOG.info("%s: %s событий", collector.__name__, len(found))
             events.extend(found)
         time.sleep(0.5)
     levels_complete = False
@@ -481,8 +478,6 @@ def collect_all(today: date | None = None) -> list[dict]:
         for event in events:
             event["rsosh_level"] = (level_for(event["title"], levels)
                                     if event["kind"] == "олимпиада" else 0)
-        LOG.info("РСОШ: подтверждены уровни для %s событий",
-                 sum(event["rsosh_level"] in (1, 2, 3) for event in events))
         levels_complete = True
     if not levels_complete:
         for event in events:
@@ -495,7 +490,6 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="проверить сбор без записи в базу")
     parser.add_argument("--json", help="сохранить собранный каталог в JSON")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     events = collect_all()
     if args.json:
         with open(args.json, "w", encoding="utf-8") as file:
