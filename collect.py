@@ -241,6 +241,19 @@ def collect_hacklist(session: requests.Session, today: date) -> list[dict]:
         event["description"] = "Хакатон для школьников. Регистрация и точные условия - на странице события и у организатора."
         event["benefits"] = "Призы и условия уточняйте у организатора"
         event["stages"] = [{"name": "Хакатон", "date": start}] if start else []
+        if "идея фикс" in title.casefold():
+            event["official_url"] = "https://www.sferum.ru/hackathon_2026"
+            event["organizer"] = "Сферум"
+            event["min_age"] = 12
+            event["max_age"] = 18
+            event["registration_deadline"] = "2026-09-20"
+            event["format"] = "онлайн, финал в Москве"
+            event["eligibility"] = "Команда из педагога и 3-5 школьников или студентов; школьники 12-18 лет"
+            event["description"] = ("Всероссийский хакатон «Идея Фикс»: команда создаёт бота или сервис "
+                                    "для школьной жизни. Этап разработки - 20 октября - 8 ноября 2026, "
+                                    "финал в Москве - 12 декабря 2026. Подробности на официальном сайте.")
+            event["stages"] = [{"name": "Завершение разработки", "date": "2026-11-08"},
+                               {"name": "Финал в Москве", "date": "2026-12-12"}]
         events.append(validate_event(event))
     return events
 

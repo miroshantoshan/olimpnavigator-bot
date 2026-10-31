@@ -1869,19 +1869,19 @@
   },
   {
     "source_url": "https://hacklist.ru/itevents/ideya-fiks-hakaton-shkolnikov/",
-    "min_age": null,
+    "min_age": 12,
     "benefits": "Призы и условия уточняйте у организатора",
-    "registration_deadline": null,
+    "registration_deadline": "2026-09-20",
     "result_date": null,
-    "format": "очно",
-    "official_url": "https://hacklist.ru/itevents/ideya-fiks-hakaton-shkolnikov/",
-    "organizer": "Уточняйте у организатора",
+    "format": "онлайн, финал в Москве",
+    "official_url": "https://www.sferum.ru/hackathon_2026",
+    "organizer": "Сферум",
     "title": "Хакатон «Идея Фикс» для школьников",
     "checked_at": "2026-10-28",
     "regions": [
       "Вся Россия"
     ],
-    "max_age": null,
+    "max_age": 18,
     "id": "hacklist-ideya-fiks-hakaton-shkolnikov",
     "grades": [],
     "subjects": [
@@ -1891,12 +1891,16 @@
     "kind": "хакатон",
     "stages": [
       {
-        "name": "Хакатон",
+        "name": "Завершение разработки",
+        "date": "2026-11-08"
+      },
+      {
+        "name": "Финал в Москве",
         "date": "2026-12-12"
       }
     ],
-    "description": "Хакатон для школьников. Регистрация и точные условия - на странице события и у организатора.",
-    "eligibility": "Проверьте положение организатора",
+    "description": "Всероссийский хакатон «Идея Фикс»: команда создаёт бота или сервис для школьной жизни. Этап разработки - 20 октября - 8 ноября 2026, финал в Москве - 12 декабря 2026. Подробности на официальном сайте.",
+    "eligibility": "Команда из педагога и 3-5 школьников или студентов; школьники 12-18 лет",
     "rsosh_level": 0,
     "image_url": "https://hacklist.ru/itevents/ideya-fiks-hakaton-shkolnikov/opengraph-image/"
   },
