@@ -32,7 +32,7 @@ from collect import collect_all
 from core import (INTERESTS, POINTS, REGIONS, achievements_for, add_achievement, ai_messages_today, all_events,
                   due_notifications, end_ai_session, ensure_user, get_ai_session, get_event, get_user, import_events,
                   init_db, is_tracked, leaderboard, mark_admin_delivered, mark_sent,
-                  matches, pending_reviews_for, recommended, review_achievement,
+                  matches, pending_reviews_for, recommended, remember_name, review_achievement,
                   save_ai_session, subscribers_for, track, tracked_ids, update_user, use_ai_message)
 from services import MaxAPI, MaxAPIError, ai_answer, russian_ssl
 local_token = importlib.import_module('max_token') if importlib.util.find_spec('max_token') else None
@@ -438,6 +438,7 @@ async def deadlines(uid):
                            screen(back='home'), 'deadlines')
 
 async def portfolio(uid):
+    state(uid)['stage'] = None
     rows = achievements_for(uid)
     statuses = {'pending': 'на проверке', 'approved': 'подтверждено',
                 'rejected': 'отклонено', 'superseded': 'заменено новым результатом'}
@@ -447,19 +448,35 @@ async def portfolio(uid):
         lines.append(f'• <b>{esc((e or {}).get("title", row["event_id"])[:60])}</b> - '
                      f'{esc(row["result"])} <i>({statuses.get(row["status"], row["status"])}, {row["points"]} б.)</i>')
     top = leaderboard()
-    rating = '\n'.join(f'{i}. {"Вы" if r["tg_id"] == uid else f"Участник №{i}"} · {r["points"]} б.'
+    rating = '\n'.join(f'{i}. {esc(r["display_name"] or "Участник")} · {r["points"]} б.'
                        for i, r in enumerate(top[:10], 1)) or '<i>Подтверждённых результатов пока нет.</i>'
     score_lines = '\n'.join(
         f'{label}: {POINTS[level]["победитель"]} / {POINTS[level]["призёр"]} / {POINTS[level]["участник"]}'
         for level, label in ((1, 'I уровень'), (2, 'II уровень'), (3, 'III уровень'),
                              (0, 'Без уровня / не подтверждён')))
     text = (f'<b>🏅 Моё портфолио</b>\n\n' + ('\n'.join(lines) or '<i>Пока нет результатов.</i>') +
-            f'\n\n<b>🏆 Настоящий рейтинг</b>\n{rating}\n\n'
+            f'\n\n<b>🏆 Рейтинг</b>\n{rating}\n\n'
             f'<b>🎖️ Баллы за подтверждённый результат</b>\n'
             f'Победитель / призёр / участник:\n{score_lines}\n\n'
             '<i>Это баллы внутри ОлимпНавигатора, не льготы при поступлении. '
             'Очки начисляются после проверки результата администратором.</i>')
-    return await send(uid, text, screen(back='home'), 'portfolio')
+    return await send(uid, text, screen([[btn('➕ Добавить достижение', 'achievement_pick:0')]], back='home'), 'portfolio')
+
+
+async def achievement_pick(uid, page=0):
+    state(uid)['stage'] = None
+    events = sorted(all_events(), key=lambda event: event['title'].casefold())
+    last = max(0, (len(events) - 1) // PAGE)
+    page = max(0, min(page, last))
+    rows = [[btn(event['title'][:55], f'result_begin:{event["id"]}')]
+            for event in events[page * PAGE:(page + 1) * PAGE]]
+    if last:
+        rows.append([btn('←', f'achievement_pick:{page-1}'),
+                     btn(f'{page+1}/{last+1}', 'noop'),
+                     btn('→', f'achievement_pick:{page+1}')])
+    return await send(uid, f'<b>➕ Добавить достижение</b>\n\n'
+                           f'Выбери мероприятие из каталога: <b>{len(events)}</b> 🏆',
+                      screen(rows, back='portfolio'), 'portfolio')
 
 async def assistant(uid, eid=None):
     st = state(uid)
@@ -483,8 +500,9 @@ async def notify_admins():
                 dokazatelstvo = f'\n📎 Подтверждение: {esc(row["file_name"] or "без файла")}'
                 extra = ([{'type': row['file_kind'], 'payload': {'token': row['file_id']}}]
                          if row['file_id'] and row['file_kind'] in ('image', 'file') else None)
+                applicant = get_user(row['tg_id']) or {}
                 await send(admin, f'<b>🏅 Проверка #{row["id"]}</b>\n\n'
-                                       f'Пользователь: {row["tg_id"]}\n'
+                                       f'Пользователь: {esc(applicant.get("display_name") or row["tg_id"])}\n'
                                        f'Событие: {esc((e or {}).get("title", row["event_id"]))}\n'
                                        f'Результат: {esc(row["result"])}{dokazatelstvo}',
                                 screen([[btn('✅ Подтвердить', f'review:yes:{row["id"]}'),
@@ -503,8 +521,9 @@ async def save_result(uid, file_token=None, file_kind=None, file_name=None):
     if not saved:
         return await portfolio(uid)
     st['stage'] = None
-    await send(uid, '<b>✅ Результат отправлен на проверку.</b>\n\n'
-                         '<i>После подтверждения он появится в рейтинге.</i>', screen(back=f'open:{eid}'))
+    event = get_event(eid) or {}
+    await send(uid, f'<b>✅ Заявка на «{esc(event.get("title", eid))}» отправлена на проверку.</b>\n\n'
+                         '<i>После подтверждения баллы появятся в рейтинге.</i>', screen(back='portfolio'))
     await notify_admins()
 
 async def callback(uid, action, mid=None):
@@ -521,6 +540,8 @@ async def callback_action(uid, action, mid=None):
     if st.get('stage') == 'assistant' and action not in ('assistant_finish', 'noop') and not (uid in ADMIN_IDS and action.startswith('review:')):
         return await send(uid, '🤖 Сначала заверши диалог с GigaChat 👇',
                           [[btn('❌ Завершить диалог', 'assistant_finish')]])
+    if action.startswith('achievement_pick:'):
+        return await achievement_pick(uid, int(action.partition(':')[2]))
     if action == 'assistant_finish':
         end_ai_session(uid)
         st['stage'] = None
@@ -683,12 +704,15 @@ async def callback_action(uid, action, mid=None):
         return await send(uid, '✅ Данные удалены.', screen(back='home'))
     if action.startswith('result_begin:'):
         eid = action.partition(':')[2]
+        if not get_event(eid):
+            return await portfolio(uid)
         if not ADMIN_IDS:
             return await more(uid, eid)
         st['result_event'] = eid
+        st['stage'] = None
         return await send(uid, '<b>🏅 Добавить результат</b>\n\nКакой у тебя результат?',
                                screen([[btn('Участник', 'result:участник'), btn('Призёр', 'result:призёр')],
-                                       [btn('Победитель', 'result:победитель')]], back=f'more:{eid}'))
+                                       [btn('Победитель', 'result:победитель')]], back='portfolio'))
     if action.startswith('result:'):
         result = action.partition(':')[2]
         if result not in ('участник', 'призёр', 'победитель') or not st.get('result_event'):
@@ -698,15 +722,21 @@ async def callback_action(uid, action, mid=None):
         return await send(uid, '<b>📎 Подтверждение результата</b>\n\n'
                                     'Пришли диплом или сертификат файлом/фото. '
                                     'Если его нет, нажми «Без файла».',
-                               screen([[btn('Без файла', 'result_skip')]], back=f'more:{st["result_event"]}'))
+                               screen([[btn('Без файла', 'result_skip')]], back='portfolio'))
     if action == 'result_skip':
         return await save_result(uid)
     if action.startswith('review:') and uid in ADMIN_IDS:
         _, decision, raw = action.split(':')
         row = review_achievement(int(raw), uid, decision == 'yes')
         if row:
-            await send(row['tg_id'], '✅ Результат подтверждён и учтён в рейтинге.'
-                            if decision == 'yes' else '❌ Результат отклонён. Проверь документ и отправь снова.',
+            event = get_event(row['event_id']) or {}
+            title = esc(event.get('title', row['event_id']))
+            await send(row['tg_id'],
+                            f'✅ Заявка на «{title}» одобрена!\n\n'
+                            f'🏅 Результат: <b>{esc(row["result"])}</b>\n'
+                            f'🎯 Начислено <b>{row["points"]}</b> баллов. Место в рейтинге обновлено.'
+                            if decision == 'yes' else
+                            f'❌ Заявка на «{title}» отклонена. Проверь подтверждение и отправь снова.',
                             screen(back='portfolio'))
             return await send(uid, '✅ Проверка выполнена.', screen(back='home'))
     return await send(uid, '🤔 Я ещё не знаю такой команды. Вернись на главную 👇',
@@ -780,7 +810,7 @@ async def message(uid, message):
                     return await save_result(uid, token, kind,
                                                   payload.get('filename') or 'Подтверждение')
         return await send(uid, '📎 Пришли фото или файл. Можно выбрать «Без файла».',
-                               screen([[btn('Без файла', 'result_skip')]], back='home'))
+                               screen([[btn('Без файла', 'result_skip')]], back='portfolio'))
     if text.startswith('/import') and uid in ADMIN_IDS:
         return await send(uid, '📦 Пришли JSON-файл с подписью /import.',
                                screen(back='home'))
@@ -793,6 +823,7 @@ async def handle_update(event):
         uid = (event.get('user') or {}).get('user_id')
         if uid:
             ensure_user(uid)
+            remember_name(uid, event.get('user') or {})
             if state(uid).get('stage') == 'assistant':
                 await send(uid, '🤖 Диалог с GigaChat ещё открыт. Напиши вопрос или заверши его 👇',
                            [[btn('❌ Завершить диалог', 'assistant_finish')]])
@@ -807,6 +838,7 @@ async def handle_update(event):
         uid = sender.get('user_id')
         if uid and not sender.get('is_bot'):
             ensure_user(uid)
+            remember_name(uid, sender)
             await message(uid, soobshenie)
         return
     if typ == 'message_callback':
@@ -817,6 +849,7 @@ async def handle_update(event):
         if not uid:
             return
         ensure_user(uid)
+        remember_name(uid, sobytie_knopki.get('user') or {})
         mid = ((event.get('message') or {}).get('body') or {}).get('mid')
         with suppress(MaxAPIError, aiohttp.ClientError, asyncio.TimeoutError):
             await API.answer(sobytie_knopki['callback_id'])

@@ -89,12 +89,24 @@ def init_db(path: Path = DB_PATH) -> None:
             history TEXT NOT NULL DEFAULT '[]'
         );
         """)
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(users)')}
+        if 'display_name' not in columns:
+            db.execute('ALTER TABLE users ADD COLUMN display_name TEXT')
 
 
 def ensure_user(tg_id: int, path: Path = DB_PATH) -> None:
    with connect(path) as db:
        db.execute("INSERT OR IGNORE INTO users(tg_id, created_at) VALUES (?, ?)",
                   (tg_id, datetime.now().isoformat(timespec="seconds")))
+
+
+def remember_name(tg_id: int, profile: dict, path: Path = DB_PATH) -> None:
+    name = ' '.join(str(profile.get(key) or '').strip() for key in ('first_name', 'last_name')).strip()
+    if not name:
+        name = str(profile.get('username') or profile.get('name') or '').strip()
+    if name:
+        with connect(path) as db:
+            db.execute('UPDATE users SET display_name=? WHERE tg_id=?', (name[:120], tg_id))
 
 
 def get_user(tg_id: int, path: Path = DB_PATH) -> dict | None:
@@ -438,7 +450,9 @@ def review_achievement(achievement_id: int, admin_id: int, approved: bool,
         db.execute("UPDATE achievements SET status=?,points=?,reviewed_by=? WHERE id=?",
                    ("approved" if approved else "rejected", achievement_points(row["result"], level) if approved else 0,
                     admin_id, achievement_id))
-    return dict(row)
+    result = dict(row)
+    result['points'] = achievement_points(row['result'], level) if approved else 0
+    return result
 
 
 def achievements_for(tg_id: int, path: Path = DB_PATH) -> list[dict]:
@@ -466,14 +480,14 @@ def mark_admin_delivered(achievement_id: int, admin_id: int, path: Path = DB_PAT
 def leaderboard(school: str | None = None, path: Path = DB_PATH) -> list[dict]:
     with connect(path) as db:
         if school:
-            rows = db.execute("""SELECT u.tg_id,u.school,SUM(a.points) AS points
+            rows = db.execute("""SELECT u.tg_id,u.school,u.display_name,SUM(a.points) AS points
                 FROM users u JOIN (
                     SELECT tg_id,event_id,MAX(points) AS points FROM achievements
                     WHERE status='approved' GROUP BY tg_id,event_id
                 ) a ON a.tg_id=u.tg_id
                 WHERE u.school=? GROUP BY u.tg_id ORDER BY points DESC LIMIT 10""", (school,)).fetchall()
         else:
-            rows = db.execute("""SELECT u.tg_id,u.school,SUM(a.points) AS points
+            rows = db.execute("""SELECT u.tg_id,u.school,u.display_name,SUM(a.points) AS points
                 FROM users u JOIN (
                     SELECT tg_id,event_id,MAX(points) AS points FROM achievements
                     WHERE status='approved' GROUP BY tg_id,event_id
