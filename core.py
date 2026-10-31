@@ -77,6 +77,17 @@ def init_db(path: Path = DB_PATH) -> None:
             admin_id INTEGER NOT NULL, sent_at TEXT NOT NULL,
             PRIMARY KEY(achievement_id, admin_id)
         );
+        CREATE TABLE IF NOT EXISTS ai_usage (
+            tg_id INTEGER NOT NULL REFERENCES users(tg_id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            messages INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(tg_id, day)
+        );
+        CREATE TABLE IF NOT EXISTS ai_sessions (
+            tg_id INTEGER PRIMARY KEY REFERENCES users(tg_id) ON DELETE CASCADE,
+            event_id TEXT,
+            history TEXT NOT NULL DEFAULT '[]'
+        );
         """)
 
 
@@ -106,6 +117,46 @@ def update_user(tg_id: int, path: Path = DB_PATH, **fields) -> None:
     sql = "UPDATE users SET " + ", ".join(f"{k}=?" for k in fields) + " WHERE tg_id=?"
     with connect(path) as db:
         db.execute(sql, (*fields.values(), tg_id))
+
+
+def ai_messages_today(tg_id: int, day: str, path: Path = DB_PATH) -> int:
+    with connect(path) as db:
+        row = db.execute("SELECT messages FROM ai_usage WHERE tg_id=? AND day=?",
+                         (tg_id, day)).fetchone()
+    return row["messages"] if row else 0
+
+
+def use_ai_message(tg_id: int, day: str, limit: int = 50, path: Path = DB_PATH) -> bool:
+    ensure_user(tg_id, path)
+    with connect(path) as db:
+        row = db.execute("SELECT messages FROM ai_usage WHERE tg_id=? AND day=?",
+                         (tg_id, day)).fetchone()
+        if row and row["messages"] >= limit:
+            return False
+        db.execute("INSERT INTO ai_usage(tg_id, day, messages) VALUES (?, ?, 1) "
+                   "ON CONFLICT(tg_id, day) DO UPDATE SET messages=messages+1",
+                   (tg_id, day))
+    return True
+
+
+def get_ai_session(tg_id: int, path: Path = DB_PATH) -> dict | None:
+    with connect(path) as db:
+        row = db.execute("SELECT event_id, history FROM ai_sessions WHERE tg_id=?",
+                         (tg_id,)).fetchone()
+    return {"event_id": row["event_id"], "history": json.loads(row["history"])} if row else None
+
+
+def save_ai_session(tg_id: int, event_id=None, history=None, path: Path = DB_PATH) -> None:
+    ensure_user(tg_id, path)
+    with connect(path) as db:
+        db.execute("INSERT INTO ai_sessions(tg_id, event_id, history) VALUES (?, ?, ?) "
+                   "ON CONFLICT(tg_id) DO UPDATE SET event_id=excluded.event_id, history=excluded.history",
+                   (tg_id, event_id, json.dumps(history or [], ensure_ascii=False)))
+
+
+def end_ai_session(tg_id: int, path: Path = DB_PATH) -> None:
+    with connect(path) as db:
+        db.execute("DELETE FROM ai_sessions WHERE tg_id=?", (tg_id,))
 
 
 def _date(value, field: str) -> str | None:

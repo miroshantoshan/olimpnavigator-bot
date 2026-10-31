@@ -28,11 +28,11 @@ if env_file.is_file():
         os.environ.setdefault(name.strip(), value)
 
 from collect import collect_all
-from core import (INTERESTS, POINTS, REGIONS, achievements_for, add_achievement, all_events,
-                  due_notifications, ensure_user, get_event, get_user, import_events,
+from core import (INTERESTS, POINTS, REGIONS, achievements_for, add_achievement, ai_messages_today, all_events,
+                  due_notifications, end_ai_session, ensure_user, get_ai_session, get_event, get_user, import_events,
                   init_db, is_tracked, leaderboard, mark_admin_delivered, mark_sent,
                   matches, pending_reviews_for, recommended, review_achievement,
-                  subscribers_for, track, tracked_ids, update_user)
+                  save_ai_session, subscribers_for, track, tracked_ids, update_user, use_ai_message)
 from services import MaxAPI, MaxAPIError, ai_answer, russian_ssl
 local_token = importlib.import_module('max_token') if importlib.util.find_spec('max_token') else None
 MAX_BOT_TOKEN = getattr(local_token, 'MAX_BOT_TOKEN', os.getenv('MAX_BOT_TOKEN', ''))
@@ -52,6 +52,7 @@ for section, filename in BANNER_NAMES.items():
 LOG = logging.getLogger(__name__)
 PAGE = 6
 REGION_PAGE = 12
+AI_DAILY_LIMIT = 50
 KINDS = ('олимпиада', 'конкурс', 'хакатон', 'образовательная программа')
 MENU = [('📚 Мероприятия', 'events'), ('🔎 Поиск', 'search'), ('⭐ Избранное', 'favorites'),
         ('📅 Сроки', 'deadlines'), ('🏅 Портфолио', 'portfolio'),
@@ -95,7 +96,11 @@ def ready(user):
 
 
 def state(uid):
-       return STATE.setdefault(uid, {})
+    if uid not in STATE:
+        session = get_ai_session(uid)
+        STATE[uid] = ({'stage': 'assistant', 'ai_event': session['event_id'],
+                       'history': session['history']} if session else {})
+    return STATE[uid]
 
 
 def event_list(uid, kind):
@@ -406,9 +411,14 @@ async def assistant(uid, eid=None):
     st['stage'] = 'assistant'
     st['ai_event'] = eid
     st['history'] = []
-    return await send(uid, '<b>🤖 Ассистент GigaChat</b>\n\nНапиши вопрос обычным сообщением. '
-                                'Я отвечу по карточкам каталога и помечу, что нужно проверить на сайте организатора. ✨',
-                           screen(back=f'open:{eid}' if eid else 'home'), 'assistant')
+    save_ai_session(uid, eid)
+    remaining = AI_DAILY_LIMIT - ai_messages_today(uid, today().isoformat())
+    return await send(uid, '<b>🤖 Диалог с GigaChat</b>\n\nПиши вопросы обычными сообщениями. '
+                                'Я отвечу по карточкам каталога и помечу, что нужно проверить на сайте организатора. '
+                                'Диалог можно продолжать сколько угодно дней, но не больше 50 вопросов за день. '
+                                f'Сегодня осталось: <b>{remaining}</b>.\n\n'
+                                'Когда закончишь, нажми «Завершить диалог» 👇',
+                           [[btn('❌ Завершить диалог', 'assistant_finish')]], 'assistant')
 
 async def notify_admins():
     for admin in ADMIN_IDS:
@@ -443,7 +453,7 @@ async def save_result(uid, file_token=None, file_kind=None, file_name=None):
     await notify_admins()
 
 async def callback(uid, action, mid=None):
-    target = None if action == 'home' or not mid else (uid, mid)
+    target = None if action in ('home', 'assistant_finish') or not mid else (uid, mid)
     token = EDIT_TARGET.set(target)
     try:
         return await callback_action(uid, action, mid)
@@ -453,6 +463,15 @@ async def callback(uid, action, mid=None):
 
 async def callback_action(uid, action, mid=None):
     st = state(uid)
+    if st.get('stage') == 'assistant' and action not in ('assistant_finish', 'noop') and not (uid in ADMIN_IDS and action.startswith('review:')):
+        return await send(uid, '🤖 Сначала заверши диалог с GigaChat 👇',
+                          [[btn('❌ Завершить диалог', 'assistant_finish')]])
+    if action == 'assistant_finish':
+        end_ai_session(uid)
+        st['stage'] = None
+        st.pop('history', None)
+        st.pop('ai_event', None)
+        return await home(uid)
     sections = [item[1] for item in MENU]
     card_navigation = action.startswith(('page:', 'open:', 'more:', 'toggle:'))
     if action in sections or action in ('backlist', 'filters') or card_navigation:
@@ -643,6 +662,32 @@ async def message(uid, message):
     text = (body.get('text') or '').strip()
     attachments = body.get('attachments') or []
     st = state(uid)
+    if st.get('stage') == 'assistant':
+        finish_button = [[btn('❌ Завершить диалог', 'assistant_finish')]]
+        if text == '/myid':
+            return await send(uid, f'🪪 Твой MAX ID: <code>{uid}</code>', finish_button)
+        if text in ('/start', 'старт', 'Старт') or not text:
+            return await send(uid, '🤖 Диалог ещё открыт. Напиши вопрос или заверши его 👇',
+                              finish_button)
+        day = today().isoformat()
+        if not use_ai_message(uid, day, AI_DAILY_LIMIT):
+            return await send(uid, '⏳ На сегодня закончились 50 вопросов к GigaChat. '
+                                  'Завтра можно продолжить этот же диалог.\n\n'
+                                  'Если хочешь вернуться в меню, заверши диалог 👇',
+                              finish_button)
+        user = get_user(uid)
+        cards = [get_event(st['ai_event'])] if st.get('ai_event') and get_event(st['ai_event']) else (
+            recommended(user, today())[:6] if ready(user) else all_events()[:6])
+        answer, provider = await ai_answer(text, cards, st.get('history'))
+        st.setdefault('history', []).extend([{'role': 'user', 'text': text},
+                                              {'role': 'assistant', 'text': answer}])
+        st['history'] = st['history'][-20:]
+        save_ai_session(uid, st.get('ai_event'), st['history'])
+        title = '🤖 Отвечает GigaChat' if provider == 'GigaChat' else '📚 Подборка из каталога'
+        remaining = AI_DAILY_LIMIT - ai_messages_today(uid, day)
+        return await send(uid, f'<b>{title}</b>\n\n{esc(answer)}\n\n'
+                               f'<i>Осталось вопросов сегодня: {remaining} из {AI_DAILY_LIMIT}.</i>',
+                               finish_button)
     if text in ('/start', 'старт', 'Старт'):
         return await home(uid)
     if text == '/myid':
@@ -671,17 +716,6 @@ async def message(uid, message):
         update_user(uid, school=text[:150])
         st['stage'] = None
         return await profile(uid)
-    if st.get('stage') == 'assistant' and text:
-        user = get_user(uid)
-        cards = [get_event(st['ai_event'])] if st.get('ai_event') and get_event(st['ai_event']) else (
-            recommended(user, today())[:6] if ready(user) else all_events()[:6])
-        answer, provider = await ai_answer(text, cards, st.get('history'))
-        st.setdefault('history', []).extend([{'role': 'user', 'text': text},
-                                              {'role': 'assistant', 'text': answer}])
-        st['history'] = st['history'][-8:]
-        title = '🤖 Отвечает GigaChat' if provider == 'GigaChat' else '📚 Подборка из каталога'
-        return await send(uid, f'<b>{title}</b>\n\n{esc(answer)}',
-                               screen(back='home'))
     if st.get('stage') == 'result_file':
         for item in attachments:
             kind = item.get('type')
@@ -705,7 +739,11 @@ async def handle_update(event):
         uid = (event.get('user') or {}).get('user_id')
         if uid:
             ensure_user(uid)
-            await home(uid)
+            if state(uid).get('stage') == 'assistant':
+                await send(uid, '🤖 Диалог с GigaChat ещё открыт. Напиши вопрос или заверши его 👇',
+                           [[btn('❌ Завершить диалог', 'assistant_finish')]])
+            else:
+                await home(uid)
         return
     if typ == 'message_created':
         soobshenie = event.get('message') or {}
