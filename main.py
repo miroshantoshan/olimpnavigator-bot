@@ -7,6 +7,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import sqlite3
 from contextlib import AsyncExitStack, suppress
 from contextvars import ContextVar
@@ -62,6 +63,60 @@ STATE: dict[int, dict] = {}
 
 def esc(value):
   return html.escape(str(value or ''))
+
+
+def ai_text(value):
+    safe = esc(value)
+    safe = re.sub(r'\*\*([^*\n]+)\*\*', r'<b>\1</b>', safe)
+    safe = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<i>\1</i>', safe)
+    safe = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', safe)
+    lines = []
+    for line in safe.splitlines():
+        if line.startswith('## '):
+            line = '<b>' + line[3:] + '</b>'
+        elif line.startswith('# '):
+            line = '<b>' + line[2:] + '</b>'
+        elif line.startswith('- '):
+            line = '• ' + line[2:]
+        lines.append(line)
+    return '\n'.join(lines)
+
+
+AI_COMMON_WORDS = {'расскажи', 'про', 'что', 'это', 'какие', 'какой', 'какая',
+                   'когда', 'где', 'как', 'мне', 'можно', 'участвовать',
+                   'участие', 'срок', 'сроки', 'дата', 'даты', 'приз', 'призы',
+                   'хакатон', 'хакатоне', 'олимпиада', 'олимпиаде', 'конкурс',
+                   'подробнее', 'есть', 'будет', 'для', 'него', 'ней'}
+
+
+def ai_terms(text):
+    words = re.findall(r'[a-zа-яё0-9]+', text.casefold().replace('ё', 'е'))
+    return [word for word in words if len(word) > 2 and word not in AI_COMMON_WORDS]
+
+
+def ai_cards(question, history, user, selected_id=None):
+    if selected_id:
+        card = get_event(selected_id)
+        if card:
+            return [card]
+    events = all_events()
+    previous = [turn.get('text', '') for turn in reversed(history or [])
+                if turn.get('role') == 'user']
+    for text in [question] + previous:
+        terms = ai_terms(text)
+        if not terms:
+            continue
+        scores = []
+        for event in events:
+            title = event['title'].casefold().replace('ё', 'е')
+            details = (event['organizer'] + ' ' + event['description']).casefold().replace('ё', 'е')
+            score = sum(6 if word in title else 1 if word in details else 0 for word in terms)
+            if score:
+                scores.append((score, event))
+        if scores:
+            scores.sort(key=lambda item: (-item[0], item[1]['title']))
+            return [event for _, event in scores[:6]]
+    return recommended(user, today())[:6] if ready(user) else events[:6]
 
 
 def today():
@@ -414,7 +469,7 @@ async def assistant(uid, eid=None):
     save_ai_session(uid, eid)
     remaining = AI_DAILY_LIMIT - ai_messages_today(uid, today().isoformat())
     return await send(uid, '<b>🤖 Диалог с GigaChat</b>\n\nПиши вопросы обычными сообщениями. '
-                                'Я отвечу по карточкам каталога и помечу, что нужно проверить на сайте организатора. '
+                                'Я ищу мероприятие во всём каталоге и даю ссылку на официальный сайт. '
                                 'Диалог можно продолжать сколько угодно дней, но не больше 50 вопросов за день. '
                                 f'Сегодня осталось: <b>{remaining}</b>.\n\n'
                                 'Когда закончишь, нажми «Завершить диалог» 👇',
@@ -676,16 +731,15 @@ async def message(uid, message):
                                   'Если хочешь вернуться в меню, заверши диалог 👇',
                               finish_button)
         user = get_user(uid)
-        cards = [get_event(st['ai_event'])] if st.get('ai_event') and get_event(st['ai_event']) else (
-            recommended(user, today())[:6] if ready(user) else all_events()[:6])
-        answer, provider = await ai_answer(text, cards, st.get('history'))
+        cards = ai_cards(text, st.get('history'), user, st.get('ai_event'))
+        answer, provider = await ai_answer(text, cards, st.get('history'), today().isoformat())
         st.setdefault('history', []).extend([{'role': 'user', 'text': text},
                                               {'role': 'assistant', 'text': answer}])
         st['history'] = st['history'][-20:]
         save_ai_session(uid, st.get('ai_event'), st['history'])
         title = '🤖 Отвечает GigaChat' if provider == 'GigaChat' else '📚 Подборка из каталога'
         remaining = AI_DAILY_LIMIT - ai_messages_today(uid, day)
-        return await send(uid, f'<b>{title}</b>\n\n{esc(answer)}\n\n'
+        return await send(uid, f'<b>{title}</b>\n\n{ai_text(answer)}\n\n'
                                f'<i>Осталось вопросов сегодня: {remaining} из {AI_DAILY_LIMIT}.</i>',
                                finish_button)
     if text in ('/start', 'старт', 'Старт'):
