@@ -59,7 +59,7 @@ AI_DAILY_LIMIT = 50
 KINDS = ('олимпиада', 'конкурс', 'хакатон', 'образовательная программа')
 MENU = [('📚 Мероприятия', 'events'), ('🔎 Поиск', 'search'), ('⭐ Избранное', 'favorites'),
         ('📅 Сроки', 'deadlines'), ('🏅 Портфолио', 'portfolio'),
-        ('🤖 GigaChat', 'assistant'), ('👤 Профиль', 'profile')]
+        ('🤖 Нейросеть', 'assistant'), ('👤 Профиль', 'profile')]
 STATE: dict[int, dict] = {}
 
 
