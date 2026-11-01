@@ -1,4 +1,4 @@
-<img src="assets/glavnaya_readme.png" alt="ОлимпНавигатор" width="560">
+<img src="assets/glavnaya_readme.png" alt="ОлимпНавигатор" width="760">
 
 # ОлимпНавигатор
 
