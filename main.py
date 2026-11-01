@@ -32,8 +32,9 @@ from collect import collect_all
 from core import (INTERESTS, POINTS, REGIONS, achievements_for, add_achievement, ai_messages_today, all_events,
                   create_custom_event,
                   due_notifications, end_ai_session, ensure_user, get_ai_session, get_event, get_user, import_events,
-                  init_db, is_tracked, leaderboard, mark_admin_delivered, mark_sent,
-                  matches, pending_reviews_for, recommended, remember_name, review_achievement,
+                  init_db, is_tracked, leaderboard, mark_admin_delivered, mark_review_notified, mark_sent,
+                  matches, pending_achievement, pending_review_notice, pending_review_notifications, pending_reviews_for,
+                  recommended, remember_name, review_achievement,
                   save_ai_session, subscribers_for, track, tracked_ids, update_user, use_ai_message)
 from services import MaxAPI, MaxAPIError, ai_answer, russian_ssl
 local_token = importlib.import_module('max_token') if importlib.util.find_spec('max_token') else None
@@ -61,6 +62,7 @@ MENU = [('📚 Мероприятия', 'events'), ('🔎 Поиск', 'search')
         ('📅 Сроки', 'deadlines'), ('🏅 Портфолио', 'portfolio'),
         ('🤖 Нейросеть', 'assistant'), ('👤 Профиль', 'profile')]
 STATE: dict[int, dict] = {}
+REVIEW_NOTICE_LOCK = asyncio.Lock()
 
 
 def bezopasniy_tekst(value):
@@ -459,6 +461,9 @@ async def portfolio(uid):
         e = get_event(row['event_id'])
         lines.append(f'• <b>{bezopasniy_tekst((e or {}).get("title", row["event_id"])[:60])}</b> - '
                      f'{bezopasniy_tekst(row["result"])} <i>({statuses.get(row["status"], row["status"])}, {row["points"]} б.)</i>')
+        if row['review_comment']:
+            label = 'Причина отказа' if row['status'] == 'rejected' else 'Комментарий модератора'
+            lines.append(f'  💬 <b>{label}:</b> {bezopasniy_tekst(row["review_comment"])}')
     top = leaderboard()
     rating = '\n'.join(f'{i}. {bezopasniy_tekst(r["display_name"] or "Участник")} · {r["points"]} б.'
                        for i, r in enumerate(top[:10], 1)) or '<i>Подтверждённых результатов пока нет.</i>'
@@ -508,6 +513,47 @@ async def assistant(uid, eid=None):
                                 f'Сегодня осталось: <b>{remaining}</b>.\n\n'
                                 'Когда закончишь, нажми «Завершить диалог» 👇',
                            [[knopka('❌ Завершить диалог', 'assistant_finish')]], 'assistant')
+
+async def uvesti_o_reshenii(achievement_id):
+    async with REVIEW_NOTICE_LOCK:
+        row = pending_review_notice(achievement_id)
+        if not row:
+            return
+        event = get_event(row['event_id']) or {}
+        title = bezopasniy_tekst(event.get('title', row['event_id']))
+        comment = bezopasniy_tekst(row['review_comment']) if row['review_comment'] else ''
+        if row['status'] == 'approved':
+            text = (f'✅ Заявка на «{title}» одобрена!\n\n'
+                    f'🏅 Результат: <b>{bezopasniy_tekst(row["result"])}</b>\n'
+                    f'🎯 Начислено <b>{row["points"]}</b> баллов. Место в рейтинге обновлено.')
+            if comment:
+                text += f'\n\n💬 <b>Комментарий модератора:</b> {comment}'
+        else:
+            text = (f'❌ Заявка на «{title}» отклонена.\n\n'
+                    f'🎯 Начислено <b>0</b> баллов.\n'
+                    f'💬 <b>Причина:</b> {comment}\n\n'
+                    'Можно исправить подтверждение и отправить заявку снова.')
+        await API.send(row['tg_id'], text + '\n\nСпасибо! 💜', knopki_ekrana(back='portfolio'))
+        mark_review_notified(achievement_id)
+
+
+async def zavershit_proverku(admin_id, comment):
+    st = sostoyanie(admin_id)
+    achievement_id = st.pop('review_id', None)
+    approved = st.pop('review_approved', False)
+    st['stage'] = st.pop('review_prev_stage', None)
+    if achievement_id is None:
+        return await send(admin_id, 'Заявка для проверки не выбрана.', knopki_ekrana(back='home'))
+    row = review_achievement(achievement_id, admin_id, approved, comment)
+    if not row:
+        return await send(admin_id, 'Эта заявка уже проверена.', knopki_ekrana(back='home'))
+    with suppress(MaxAPIError, aiohttp.ClientError, asyncio.TimeoutError):
+        await uvesti_o_reshenii(achievement_id)
+    label = 'одобрена' if approved else 'отклонена'
+    buttons = ([[knopka('❌ Завершить диалог', 'assistant_finish')]] if st['stage'] == 'assistant'
+               else knopki_ekrana(back='home'))
+    return await send(admin_id, f'✅ Заявка #{achievement_id} {label}.', buttons)
+
 
 async def uvedomit_adminov():
     for admin in ADMIN_IDS:
@@ -757,20 +803,38 @@ async def callback_action(uid, action, mid=None):
                                knopki_ekrana([[knopka('Без файла', 'result_skip')]], back='portfolio'))
     if action == 'result_skip':
         return await sohranit_rezultat(uid)
+    if action == 'review_cancel' and uid in ADMIN_IDS and st.get('stage') == 'review':
+        st.pop('review_id', None)
+        st.pop('review_approved', None)
+        st['stage'] = st.pop('review_prev_stage', None)
+        if st['stage'] == 'assistant':
+            return await send(uid, 'Проверка отложена. Диалог с GigaChat продолжается.',
+                              [[knopka('❌ Завершить диалог', 'assistant_finish')]])
+        return await send(uid, 'Проверка отложена. Заявка остаётся на рассмотрении.',
+                          knopki_ekrana(back='home'))
+    if action == 'review_skip' and uid in ADMIN_IDS and st.get('stage') == 'review':
+        if st.get('review_approved'):
+            return await zavershit_proverku(uid, '')
     if action.startswith('review:') and uid in ADMIN_IDS:
         _, decision, raw = action.split(':')
-        row = review_achievement(int(raw), uid, decision == 'yes')
-        if row:
-            event = get_event(row['event_id']) or {}
-            title = bezopasniy_tekst(event.get('title', row['event_id']))
-            await send(row['tg_id'],
-                            f'✅ Заявка на «{title}» одобрена!\n\n'
-                            f'🏅 Результат: <b>{bezopasniy_tekst(row["result"])}</b>\n'
-                            f'🎯 Начислено <b>{row["points"]}</b> баллов. Место в рейтинге обновлено.'
-                            if decision == 'yes' else
-                            f'❌ Заявка на «{title}» отклонена. Проверь подтверждение и отправь снова.',
-                            knopki_ekrana(back='portfolio'))
-            return await send(uid, '✅ Проверка выполнена.', knopki_ekrana(back='home'))
+        if decision not in ('yes', 'no'):
+            return
+        row = pending_achievement(int(raw))
+        if not row:
+            return await send(uid, 'Эта заявка уже проверена.', knopki_ekrana(back='home'))
+        if st.get('stage') != 'review':
+            st['review_prev_stage'] = st.get('stage')
+        st['stage'] = 'review'
+        st['review_id'] = row['id']
+        st['review_approved'] = decision == 'yes'
+        if decision == 'yes':
+            return await API.send(uid, f'<b>✅ Одобрение заявки #{row["id"]}</b>\n\n'
+                                       'Напиши комментарий для участника или нажми «Без комментария».',
+                                  knopki_ekrana([[knopka('Без комментария', 'review_skip')]],
+                                                back='review_cancel'))
+        return await API.send(uid, f'<b>❌ Отклонение заявки #{row["id"]}</b>\n\n'
+                                   'Напиши причину отказа одним сообщением. Она придёт участнику.',
+                              knopki_ekrana(back='review_cancel'))
     return await send(uid, '🤔 Я ещё не знаю такой команды. Вернись на главную 👇',
                       knopki_ekrana(back='home'))
 
@@ -779,6 +843,16 @@ async def message(uid, message):
     text = (body.get('text') or '').strip()
     attachments = body.get('attachments') or []
     st = sostoyanie(uid)
+    if uid in ADMIN_IDS and st.get('stage') == 'review':
+        if not text or text.startswith('/'):
+            prompt = ('Напиши причину отказа одним сообщением.' if not st.get('review_approved')
+                      else 'Напиши комментарий или нажми «Без комментария».')
+            rows = [[knopka('Без комментария', 'review_skip')]] if st.get('review_approved') else []
+            return await send(uid, prompt, knopki_ekrana(rows, back='review_cancel'))
+        if len(' '.join(text.split())) > 1000:
+            return await send(uid, 'Комментарий слишком длинный. Напиши до 1000 символов.',
+                              knopki_ekrana(back='review_cancel'))
+        return await zavershit_proverku(uid, text)
     if st.get('stage') == 'assistant':
         finish_button = [[knopka('❌ Завершить диалог', 'assistant_finish')]]
         if text == '/myid':
@@ -917,6 +991,9 @@ async def raspisanie():
                         mark_sent(uid, e['id'], key)
             if ADMIN_IDS:
                 await uvedomit_adminov()
+            for row in pending_review_notifications():
+                with suppress(MaxAPIError, aiohttp.ClientError, asyncio.TimeoutError):
+                    await uvesti_o_reshenii(row['id'])
             if now.hour >= 6 and posledniy_sbor != now.date():
                 events = await asyncio.to_thread(collect_all, now.date())
                 if events:

@@ -93,6 +93,13 @@ def init_db(path: Path = DB_PATH) -> None:
         columns = {row['name'] for row in db.execute('PRAGMA table_info(users)')}
         if 'display_name' not in columns:
             db.execute('ALTER TABLE users ADD COLUMN display_name TEXT')
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(achievements)')}
+        if 'review_comment' not in columns:
+            db.execute('ALTER TABLE achievements ADD COLUMN review_comment TEXT')
+        if 'review_notified_at' not in columns:
+            db.execute('ALTER TABLE achievements ADD COLUMN review_notified_at TEXT')
+            db.execute("""UPDATE achievements SET review_notified_at=created_at
+                WHERE status IN ('approved','rejected')""")
 
 
 def ensure_user(tg_id: int, path: Path = DB_PATH) -> None:
@@ -446,7 +453,7 @@ def add_achievement(tg_id: int, event_id: str, result: str, file_id: str | None,
             if existing["status"] not in ("rejected", "superseded"):
                 raise sqlite3.IntegrityError("Результат уже добавлен")
             db.execute("""UPDATE achievements SET file_id=?,file_kind=?,file_name=?,status='pending',
-                points=0,created_at=?,reviewed_by=NULL WHERE id=?""",
+                points=0,created_at=?,reviewed_by=NULL,review_comment=NULL,review_notified_at=NULL WHERE id=?""",
                 (file_id, file_kind, file_name, datetime.now().isoformat(timespec="seconds"), existing["id"]))
             db.execute("DELETE FROM admin_deliveries WHERE achievement_id=?", (existing["id"],))
             return existing["id"]
@@ -457,8 +464,17 @@ def add_achievement(tg_id: int, event_id: str, result: str, file_id: str | None,
         return cursor.lastrowid
 
 
+def pending_achievement(achievement_id: int, path: Path = DB_PATH) -> dict | None:
+    with connect(path) as db:
+        row = db.execute("SELECT * FROM achievements WHERE id=? AND status='pending'", (achievement_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def review_achievement(achievement_id: int, admin_id: int, approved: bool,
-                       path: Path = DB_PATH) -> dict | None:
+                       comment: str = '', path: Path = DB_PATH) -> dict | None:
+    comment = ' '.join(comment.split())[:1000]
+    if not approved and not comment:
+        raise ValueError('Укажи причину отклонения')
     with connect(path) as db:
         row = db.execute("SELECT * FROM achievements WHERE id=? AND status='pending'", (achievement_id,)).fetchone()
         if not row:
@@ -469,12 +485,36 @@ def review_achievement(achievement_id: int, admin_id: int, approved: bool,
             db.execute("""UPDATE achievements SET status='superseded',points=0
                 WHERE tg_id=? AND event_id=? AND status='approved' AND id<>?""",
                 (row["tg_id"], row["event_id"], achievement_id))
-        db.execute("UPDATE achievements SET status=?,points=?,reviewed_by=? WHERE id=?",
+        db.execute("""UPDATE achievements SET status=?,points=?,reviewed_by=?,
+            review_comment=?,review_notified_at=NULL WHERE id=?""",
                    ("approved" if approved else "rejected", achievement_points(row["result"], level) if approved else 0,
-                    admin_id, achievement_id))
+                    admin_id, comment or None, achievement_id))
     result = dict(row)
     result['points'] = achievement_points(row['result'], level) if approved else 0
+    result['review_comment'] = comment or None
+    result['status'] = 'approved' if approved else 'rejected'
     return result
+
+
+def pending_review_notifications(path: Path = DB_PATH) -> list[dict]:
+    with connect(path) as db:
+        rows = db.execute("""SELECT * FROM achievements WHERE status IN ('approved','rejected')
+            AND review_notified_at IS NULL ORDER BY id LIMIT 100""").fetchall()
+    return [dict(row) for row in rows]
+
+
+def pending_review_notice(achievement_id: int, path: Path = DB_PATH) -> dict | None:
+    with connect(path) as db:
+        row = db.execute("""SELECT * FROM achievements WHERE id=?
+            AND status IN ('approved','rejected') AND review_notified_at IS NULL""",
+                         (achievement_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def mark_review_notified(achievement_id: int, path: Path = DB_PATH) -> None:
+    with connect(path) as db:
+        db.execute("UPDATE achievements SET review_notified_at=? WHERE id=?",
+                   (datetime.now().isoformat(timespec='seconds'), achievement_id))
 
 
 def achievements_for(tg_id: int, path: Path = DB_PATH) -> list[dict]:
