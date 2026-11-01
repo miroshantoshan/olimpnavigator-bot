@@ -127,6 +127,8 @@ py -3 main.py
 | `GIGACHAT_SCOPE` | Тип доступа GigaChat. Для личного аккаунта - `GIGACHAT_API_PERS`. |
 | `GIGACHAT_MODEL` | Модель GigaChat. По умолчанию - `GigaChat-2`. |
 | `MAX_ADMIN_IDS` | ID администраторов через запятую. Нужны для проверки достижений. |
+| `MAX_SUPPORT_ID` | ID аккаунта поддержки в MAX. |
+| `MAX_SUPPORT_URL` | Ссылка на профиль поддержки из MAX для кнопки в профиле бота. |
 | `OLIMPNAV_TIMEZONE` | Часовой пояс для сроков и напоминаний. |
 | `MAX_WEBHOOK_URL` | Публичный HTTPS-адрес вебхука. Необязателен для первого запуска. |
 | `MAX_WEBHOOK_SECRET` | Секрет для вебхука. Нужен вместе с `MAX_WEBHOOK_URL`. |

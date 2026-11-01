@@ -39,6 +39,8 @@ from services import MaxAPI, MaxAPIError, ai_answer, russian_ssl
 local_token = importlib.import_module('max_token') if importlib.util.find_spec('max_token') else None
 MAX_BOT_TOKEN = getattr(local_token, 'MAX_BOT_TOKEN', os.getenv('MAX_BOT_TOKEN', ''))
 ADMIN_IDS = getattr(local_token, 'ADMIN_IDS', [int(x) for x in os.getenv('MAX_ADMIN_IDS', '').split(',') if x.strip().isdigit()])
+SUPPORT_ID = getattr(local_token, 'SUPPORT_ID', int(os.getenv('MAX_SUPPORT_ID', '0') or 0))
+SUPPORT_URL = getattr(local_token, 'SUPPORT_URL', os.getenv('MAX_SUPPORT_URL', '').strip())
 TIMEZONE = getattr(local_token, 'TIMEZONE', os.getenv('OLIMPNAV_TIMEZONE', 'Asia/Yekaterinburg'))
 from collect import RSOSH_SOURCE_URL
 
@@ -316,7 +318,8 @@ async def profile(uid):
     rows = [[knopka('🎂 Возраст', 'field:age'), knopka('🎓 Класс', 'field:grade')],
             [knopka('📍 Регион', 'field:region'), knopka('🎯 Интересы', 'field:interests')],
             [knopka('🏫 Изменить школу', 'school'), knopka('🔔 Уведомления', 'notifications')],
-            [knopka('💬 Поддержка', 'support')], [knopka('🗑 Удалить мои данные', 'delete_prompt')]]
+            [ssylka('💬 Поддержка', SUPPORT_URL) if SUPPORT_URL else knopka('💬 Поддержка', 'support')],
+            [knopka('🗑 Удалить мои данные', 'delete_prompt')]]
     return await send(uid, text, knopki_ekrana(rows, back='home'), 'profile')
 
 async def listing(uid, events, kind='events', page=0, edit=None):
@@ -712,10 +715,10 @@ async def callback_action(uid, action, mid=None):
         update_user(uid, notifications=not user['notifications'])
         return await profile(uid)
     if action == 'support':
-        rows = [[{'type': 'clipboard', 'text': '📋 Скопировать номер',
-                  'payload': '+79224899599'}]]
-        return await send(uid, '💬 <b>Поддержка</b>\n\n+7 922 489-95-99',
-                               knopki_ekrana(rows, back='profile'))
+        text = ('💬 <b>Поддержка</b>\n\nНапиши нам в MAX через кнопку ниже.'
+                if SUPPORT_URL else f'💬 <b>Поддержка</b>\n\nID в MAX: {SUPPORT_ID or "не указан"}.')
+        rows = [[ssylka('Написать в MAX', SUPPORT_URL)]] if SUPPORT_URL else []
+        return await send(uid, text, knopki_ekrana(rows, back='profile'))
     if action == 'school':
         st['stage'] = 'school'
         return await send(uid, '<b>🏫 Школа</b>\n\nНапиши название школы одним сообщением.',
