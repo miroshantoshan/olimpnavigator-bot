@@ -34,7 +34,8 @@ class MaxAPI:
             async with self.session.request(method, BASE + path, params=params, json=payload,
                                             headers={'Authorization': self.token}) as response:
                 raw = await response.text()
-                if response.status in (429, 500, 502, 503, 504) and attempt < 3:
+                if (response.status in (429, 500, 502, 503, 504) or
+                    response.status == 400 and 'attachment.not.ready' in raw) and attempt < 3:
                     retry_value = response.headers.get('Retry-After', '')
                     retry_afer = float(retry_value) if retry_value.replace('.', '', 1).isdigit() else 0
                     delay = min(retry_afer or 0.5 * (2 ** attempt), 10)
@@ -46,7 +47,7 @@ class MaxAPI:
 
     async def upload(self, file: Path, kind: str = 'image') -> str:
         key = str(file.resolve()) + ':' + str(file.stat().st_mtime_ns)
-        if key in self.photos:
+        if kind == 'image' and key in self.photos:
             return self.photos[key]
         data = await self.request('POST', '/uploads', params={'type': kind})
         with file.open('rb') as stream:
@@ -65,7 +66,8 @@ class MaxAPI:
                     break
         if not token:
             raise MaxAPIError(f'Upload returned no token for {file.name}')
-        self.photos[key] = token
+        if kind == 'image':
+            self.photos[key] = token
         return token
 
     async def body(self, text: str, rows=None, image: Path | None = None, extra=None):

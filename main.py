@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import html
 import hmac
 import importlib
@@ -9,9 +10,10 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 from contextlib import AsyncExitStack, suppress
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import aiohttp
@@ -396,6 +398,7 @@ async def card(uid, eid, edit=None):
             f'✅ Проверено: {bezopasniy_tekst(e["checked_at"])}')
     tracked = is_tracked(uid, eid)
     rows = [[ssylka('🌐 Открыть источник', e['official_url'])],
+            [knopka('📅 Добавить в календарь', f'cal:event:{eid}')],
             [knopka('🔔 Отслеживаю' if tracked['participating'] else '🔔 Следить', f'toggle:part:{eid}'),
              knopka('⭐ Сохранено' if tracked['favorite'] else '⭐ Сохранить', f'toggle:fav:{eid}')],
             [knopka('📖 Подробнее', f'more:{eid}')]]
@@ -464,24 +467,89 @@ async def filters(uid, scope='search', edit=None):
                                 '<i>Отметь нужное и нажми «Показать» 👇</i>',
                            knopki_filtrov(uid), scope if scope in BANNERS else 'search', edit=edit)
 
+def sobytiya_kalendarya(events, today):
+    found = []
+    seen = set()
+    for e in events:
+        dates = [(e['registration_deadline'], 'Регистрация до'),
+                 (e['result_date'], 'Результаты')]
+        dates.extend((stage.get('date'), stage['name']) for stage in e['stages'])
+        for day, label in dates:
+            key = (e['id'], day, label)
+            if day and day >= today.isoformat() and key not in seen:
+                seen.add(key)
+                found.append((day, label, e))
+    return sorted(found, key=lambda item: (item[0], item[2]['title'], item[1]))
+
+
+def ekran_ics(value):
+    return str(value).replace('\\', '\\\\').replace('\n', '\\n').replace(';', '\\;').replace(',', '\\,')
+
+
+def slozhit_ics_line(line):
+    parts = []
+    part = ''
+    for char in line:
+        if len((part + char).encode('utf-8')) > 75:
+            parts.append(part)
+            part = ' ' + char
+        else:
+            part += char
+    parts.append(part)
+    return '\r\n'.join(parts)
+
+
+def kalendar_ics(items):
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//OlimpNavigator//MAX//RU',
+             'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:ОлимпНавигатор']
+    for day, label, e in items:
+        uid = hashlib.sha256(f'{e["id"]}|{day}|{label}'.encode('utf-8')).hexdigest()[:32]
+        start = date.fromisoformat(day)
+        lines.extend(['BEGIN:VEVENT', f'UID:{uid}@olimpnavigator', f'DTSTAMP:{stamp}',
+                      f'DTSTART;VALUE=DATE:{start:%Y%m%d}',
+                      f'DTEND;VALUE=DATE:{start + timedelta(days=1):%Y%m%d}',
+                      f'SUMMARY:{ekran_ics(label + ": " + e["title"])}',
+                      f'DESCRIPTION:{ekran_ics("Уточни время на сайте организатора: " + e["official_url"])}',
+                      f'URL:{e["official_url"]}',
+                      'BEGIN:VALARM', 'ACTION:DISPLAY',
+                      f'DESCRIPTION:{ekran_ics(label + ": " + e["title"])}',
+                      'TRIGGER:-P1D', 'END:VALARM', 'END:VEVENT'])
+    lines.append('END:VCALENDAR')
+    return ('\r\n'.join(slozhit_ics_line(line) for line in lines) + '\r\n').encode('utf-8')
+
+
+async def otpravit_kalendar(uid, events, back):
+    items = sobytiya_kalendarya(events, segodnya())
+    if not items:
+        return await send(uid, '📅 Для этого выбора пока нет будущих дат. Проверь карточку события позже.',
+                          knopki_ekrana(back=back))
+    with tempfile.TemporaryDirectory() as folder:
+        file = Path(folder) / 'olimpnavigator.ics'
+        file.write_bytes(kalendar_ics(items))
+        token = await API.upload(file, 'file')
+        await asyncio.sleep(1)
+        return await send(uid, f'📅 <b>Календарь готов</b> · {len(items)} дат\n\n'
+                               'Открой файл и добавь события в календарь телефона. '
+                               'Напоминание стоит за день до каждой даты.',
+                          knopki_ekrana(back=back), extra=[{'type': 'file', 'payload': {'token': token}}])
+
+
 async def deadlines(uid):
-    lines = []
-    for eid in tracked_ids(uid, 'participating'):
-        e = get_event(eid)
-        if not e:
-            continue
-        for day, label in [(e['registration_deadline'], 'Регистрация'), (e['result_date'], 'Результаты')]:
-            if day and day >= segodnya().isoformat():
-                lines.append((day, label, e))
-        for stage in e['stages']:
-            if stage.get('date') and stage['date'] >= segodnya().isoformat():
-                lines.append((stage['date'], stage['name'], e))
-    lines.sort(key=lambda item: item[0])
+    events = [get_event(eid) for eid in tracked_ids(uid, 'participating')]
+    events = [e for e in events if e]
+    lines = sobytiya_kalendarya(events, segodnya())
     body = '\n'.join(f'📌 <b>{bezopasniy_tekst(day)}</b> · {bezopasniy_tekst(label)}: {bezopasniy_tekst(e["title"][:70])}'
                      for day, label, e in lines[:15]) or '<i>Пока нет отслеживаемых дат.</i>'
+    rows = [[knopka('📅 Добавить все в календарь', 'cal:all')]] if lines else []
+    shown = set()
+    for _, _, e in lines[:15]:
+        if e['id'] not in shown:
+            shown.add(e['id'])
+            rows.append([knopka('📅 ' + e['title'][:40], f'cal:event:{e["id"]}')])
     return await send(uid, f'<b>⏰ Мои сроки</b>\n\n{body}\n\n'
                                 '<i>Добавь мероприятие через кнопку «Следить» в его карточке.</i>',
-                           knopki_ekrana(back='home'), 'deadlines')
+                           knopki_ekrana(rows, back='home'), 'deadlines')
 
 async def portfolio(uid):
     sostoyanie(uid)['stage'] = None
@@ -658,7 +726,7 @@ async def callback_action(uid, action, mid=None):
         st.pop('ai_event', None)
         return await home(uid)
     sections = [item[1] for item in MENU]
-    card_navigation = action.startswith(('page:', 'open:', 'more:', 'tasks:', 'toggle:'))
+    card_navigation = action.startswith(('page:', 'open:', 'more:', 'tasks:', 'cal:', 'toggle:'))
     if action in sections or action in ('backlist', 'filters') or card_navigation:
         st['stage'] = None
     if action == 'noop':
@@ -676,6 +744,13 @@ async def callback_action(uid, action, mid=None):
         return await filters(uid, st.get('list_kind', 'search') if st.get('list_kind') == 'favorites' else 'search')
     if action == 'deadlines':
         return await deadlines(uid)
+    if action == 'cal:all':
+        events = [get_event(eid) for eid in tracked_ids(uid, 'participating')]
+        return await otpravit_kalendar(uid, [e for e in events if e], 'deadlines')
+    if action.startswith('cal:event:'):
+        eid = action.removeprefix('cal:event:')
+        e = get_event(eid)
+        return await otpravit_kalendar(uid, [e] if e else [], f'open:{eid}')
     if action == 'profile':
         st['stage'] = None
         return await profile(uid)
