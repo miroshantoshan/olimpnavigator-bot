@@ -44,7 +44,7 @@ MAX_BOT_TOKEN = getattr(local_token, 'MAX_BOT_TOKEN', os.getenv('MAX_BOT_TOKEN',
 ADMIN_IDS = getattr(local_token, 'ADMIN_IDS', [int(x) for x in os.getenv('MAX_ADMIN_IDS', '').split(',') if x.strip().isdigit()])
 SUPPORT_ID = getattr(local_token, 'SUPPORT_ID', int(os.getenv('MAX_SUPPORT_ID', '0') or 0))
 SUPPORT_URL = getattr(local_token, 'SUPPORT_URL', os.getenv('MAX_SUPPORT_URL', '').strip())
-TIMEZONE = getattr(local_token, 'TIMEZONE', os.getenv('OLIMPNAV_TIMEZONE', 'Asia/Yekaterinburg'))
+TIMEZONE = getattr(local_token, 'TIMEZONE', os.getenv('OLIMPNAV_TIMEZONE', 'Europe/Moscow'))
 from collect import RSOSH_SOURCE_URL
 
 ROOT = Path(__file__).parent
@@ -1262,7 +1262,6 @@ async def obrabotat_sobytie(event):
         await callback(uid, sobytie_knopki.get('payload') or '', mid)
 
 async def raspisanie():
-    posledniy_sbor = None
     while True:
         with suppress(Exception):
             now = datetime.now(ZoneInfo(TIMEZONE))
@@ -1277,19 +1276,28 @@ async def raspisanie():
             for row in pending_review_notifications():
                 with suppress(MaxAPIError, aiohttp.ClientError, asyncio.TimeoutError):
                     await uvesti_o_reshenii(row['id'])
-            if now.hour >= 6 and posledniy_sbor != now.date():
-                events = await asyncio.to_thread(collect_all, now.date())
-                if events:
-                    _, _, changes = import_events(events)
-                    for eid, label in changes:
-                        e = get_event(eid)
-                        if e:
-                            for uid in subscribers_for(eid):
-                                with suppress(MaxAPIError, aiohttp.ClientError, asyncio.TimeoutError):
-                                    await send(uid, f'🔔 Обновлено: {bezopasniy_tekst(label)} у «{bezopasniy_tekst(e["title"])}».',
-                                                    knopki_ekrana([[knopka('Открыть', f'open:{eid}')]]))
-                    posledniy_sbor = now.date()
         await asyncio.sleep(900)
+
+
+async def ezhednevniy_sbor():
+    moskva = ZoneInfo('Europe/Moscow')
+    while True:
+        now = datetime.now(moskva)
+        next_run = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        await asyncio.sleep((next_run - now).total_seconds())
+        with suppress(Exception):
+            events = await asyncio.to_thread(collect_all, next_run.date())
+            if events:
+                _, _, changes = import_events(events)
+                for eid, label in changes:
+                    e = get_event(eid)
+                    if e:
+                        for uid in subscribers_for(eid):
+                            with suppress(MaxAPIError, aiohttp.ClientError, asyncio.TimeoutError):
+                                await send(uid, f'🔔 Обновлено: {bezopasniy_tekst(label)} у «{bezopasniy_tekst(e["title"])}».',
+                                               knopki_ekrana([[knopka('Открыть', f'open:{eid}')]]))
 
 
 async def main():
@@ -1298,8 +1306,9 @@ async def main():
         raise SystemExit
     logging.disable(logging.CRITICAL)
     init_db()
-    if not all_events():
-        import_events(json.loads((ROOT / 'catalog.seed.json').read_text(encoding='utf-8')))
+    start_events = await asyncio.to_thread(collect_all, datetime.now(ZoneInfo('Europe/Moscow')).date())
+    if start_events:
+        import_events(start_events)
     timeout = aiohttp.ClientTimeout(total=45)
     connector = aiohttp.TCPConnector(ssl=russian_ssl())
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
@@ -1311,6 +1320,7 @@ async def main():
                 {'name': 'myid', 'description': 'Узнать свой MAX ID'}]})
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(raspisanie())
+            tasks.create_task(ezhednevniy_sbor())
             webhook_url = os.getenv('MAX_WEBHOOK_URL', '').strip()
             secret = os.getenv('MAX_WEBHOOK_SECRET', '').strip()
             if webhook_url and (not webhook_url.startswith('https://') or
