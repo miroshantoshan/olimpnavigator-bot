@@ -548,8 +548,9 @@ async def more(uid, eid):
             f'<b>📚 Подготовка</b>\n{preparation}\n\n'
             f'<b>👥 Условия</b>\n{bezopasniy_tekst(e["eligibility"])}\n\n'
             f'<b>🏅 Результаты</b>\n{bezopasniy_tekst(e["result_date"] or "дата не опубликована")}\n\n'
-            f'🎖️ <b>Баллы портфолио:</b> победитель {points["победитель"]}, '
-            f'призёр {points["призёр"]}, участник {points["участник"]}.\n\n'
+            f'🪙 <b>ОлимпКоины за результат:</b> победитель {points["победитель"]}, '
+            f'призёр {points["призёр"]}, участник {points["участник"]}.\n'
+            '<i>Начисляются после проверки достижения.</i>\n\n'
             f'<a href="{bezopasniy_tekst(e["source_url"])}">Проверить первоисточник</a> · '
             f'<a href="{RSOSH_SOURCE_URL}">Перечень РСОШ</a>')
     rows = [[knopka('🤖 Спросить ИИ об этом', f'assistant_event:{eid}')]]
@@ -675,23 +676,24 @@ async def portfolio(uid):
     for row in rows[:15]:
         e = get_event(row['event_id'])
         lines.append(f'• <b>{bezopasniy_tekst((e or {}).get("title", row["event_id"])[:60])}</b> - '
-                     f'{bezopasniy_tekst(row["result"])} <i>({statuses.get(row["status"], row["status"])}, {row["points"]} б.)</i>')
+                     f'{bezopasniy_tekst(row["result"])} <i>({statuses.get(row["status"], row["status"])}, ОлимпКоины: {row["points"]})</i>')
         if row['review_comment']:
             label = 'Причина отказа' if row['status'] == 'rejected' else 'Комментарий модератора'
             lines.append(f'  💬 <b>{label}:</b> {bezopasniy_tekst(row["review_comment"])}')
     top = leaderboard()
-    rating = '\n'.join(f'{i}. {bezopasniy_tekst(r["display_name"] or "Участник")} · {r["points"]} б.'
+    rating = '\n'.join(f'{i}. {bezopasniy_tekst(r["display_name"] or "Участник")} · 🪙 {r["points"]}'
                        for i, r in enumerate(top[:10], 1)) or '<i>Подтверждённых результатов пока нет.</i>'
     score_lines = '\n'.join(
         f'{label}: {POINTS[level]["победитель"]} / {POINTS[level]["призёр"]} / {POINTS[level]["участник"]}'
         for level, label in ((1, 'I уровень'), (2, 'II уровень'), (3, 'III уровень'),
                              (0, 'Без уровня / не подтверждён')))
     text = (f'<b>🏅 Моё портфолио</b>\n\n' + ('\n'.join(lines) or '<i>Пока нет результатов.</i>') +
-            f'\n\n<b>🏆 Рейтинг</b>\n{rating}\n\n'
-            f'<b>🎖️ Баллы за подтверждённый результат</b>\n'
+            f'\n\n<b>🏆 Рейтинг по ОлимпКоинам</b>\n{rating}\n\n'
+            f'<b>🪙 ОлимпКоины за подтверждённый результат</b>\n'
             f'Победитель / призёр / участник:\n{score_lines}\n\n'
-            '<i>Это баллы внутри ОлимпНавигатора, не льготы при поступлении. '
-            'Очки начисляются после проверки результата администратором.</i>')
+            '<i>ОлимпКоины - внутренняя награда ОлимпНавигатора. '
+            'Они начисляются после проверки достижения администратором и определяют место в рейтинге. '
+            'Льгот при поступлении ОлимпКоины не дают.</i>')
     return await send(uid, text, knopki_ekrana([[knopka('➕ Добавить достижение', 'achievement_pick:0')]], back='home'), 'portfolio')
 
 
@@ -740,12 +742,12 @@ async def uvesti_o_reshenii(achievement_id):
         if row['status'] == 'approved':
             text = (f'✅ Заявка на «{title}» одобрена!\n\n'
                     f'🏅 Результат: <b>{bezopasniy_tekst(row["result"])}</b>\n'
-                    f'🎯 Начислено <b>{row["points"]}</b> баллов. Место в рейтинге обновлено.')
+                    f'🪙 ОлимпКоины начислены: <b>{row["points"]}</b>. Место в рейтинге обновлено.')
             if comment:
                 text += f'\n\n💬 <b>Комментарий модератора:</b> {comment}'
         else:
             text = (f'❌ Заявка на «{title}» отклонена.\n\n'
-                    f'🎯 Начислено <b>0</b> баллов.\n'
+                    f'🪙 ОлимпКоины: <b>0</b>.\n'
                     f'💬 <b>Причина:</b> {comment}\n\n'
                     'Можно исправить подтверждение и отправить заявку снова.')
         await API.send(row['tg_id'], text + '\n\nСпасибо! 💜', knopki_ekrana(back='portfolio'))
@@ -801,7 +803,7 @@ async def sohranit_rezultat(uid, file_token=None, file_kind=None, file_name=None
     st['stage'] = None
     event = get_event(eid) or {}
     await send(uid, f'<b>✅ Заявка на «{bezopasniy_tekst(event.get("title", eid))}» отправлена на проверку.</b>\n\n'
-                         '<i>После подтверждения баллы появятся в рейтинге.</i>', knopki_ekrana(back='portfolio'))
+                         '<i>После подтверждения ОлимпКоины появятся в рейтинге.</i>', knopki_ekrana(back='portfolio'))
     await uvedomit_adminov()
 
 async def callback(uid, action, mid=None):
