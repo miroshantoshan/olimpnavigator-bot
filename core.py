@@ -89,10 +89,19 @@ def init_db(path: Path = DB_PATH) -> None:
             event_id TEXT,
             history TEXT NOT NULL DEFAULT '[]'
         );
+        CREATE TABLE IF NOT EXISTS partner_messages (
+            sender_id INTEGER NOT NULL REFERENCES users(tg_id) ON DELETE CASCADE,
+            recipient_id INTEGER NOT NULL REFERENCES users(tg_id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(sender_id, recipient_id, day)
+        );
         """)
         columns = {row['name'] for row in db.execute('PRAGMA table_info(users)')}
         if 'display_name' not in columns:
             db.execute('ALTER TABLE users ADD COLUMN display_name TEXT')
+        if 'partner_public' not in columns:
+            db.execute('ALTER TABLE users ADD COLUMN partner_public INTEGER NOT NULL DEFAULT 0')
         columns = {row['name'] for row in db.execute('PRAGMA table_info(achievements)')}
         if 'review_comment' not in columns:
             db.execute('ALTER TABLE achievements ADD COLUMN review_comment TEXT')
@@ -128,7 +137,7 @@ def get_user(tg_id: int, path: Path = DB_PATH) -> dict | None:
 
 
 def update_user(tg_id: int, path: Path = DB_PATH, **fields) -> None:
-    allowed = {"age", "grade", "region", "school", "interests", "notifications"}
+    allowed = {"age", "grade", "region", "school", "interests", "notifications", "partner_public"}
     if not fields or set(fields) - allowed:
         raise ValueError("Недопустимые поля профиля")
     ensure_user(tg_id, path)
@@ -137,6 +146,43 @@ def update_user(tg_id: int, path: Path = DB_PATH, **fields) -> None:
     sql = "UPDATE users SET " + ", ".join(f"{k}=?" for k in fields) + " WHERE tg_id=?"
     with connect(path) as db:
         db.execute(sql, (*fields.values(), tg_id))
+
+
+def partner_users(tg_id: int, path: Path = DB_PATH) -> list[dict]:
+    with connect(path) as db:
+        rows = db.execute("""SELECT tg_id,display_name,grade,school,interests FROM users
+                            WHERE partner_public=1 AND tg_id<>? AND grade IS NOT NULL
+                            ORDER BY display_name COLLATE NOCASE, tg_id""", (tg_id,)).fetchall()
+    users = []
+    for row in rows:
+        user = dict(row)
+        user['interests'] = json.loads(user['interests'])
+        users.append(user)
+    return users
+
+
+def reserve_partner_message(sender_id: int, recipient_id: int, day: str,
+                            path: Path = DB_PATH) -> str:
+    if sender_id == recipient_id:
+        return 'unavailable'
+    with connect(path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        rows = db.execute('SELECT tg_id,partner_public FROM users WHERE tg_id IN (?,?)',
+                          (sender_id, recipient_id)).fetchall()
+        if len(rows) != 2 or not all(row['partner_public'] for row in rows):
+            return 'unavailable'
+        total = db.execute('SELECT COALESCE(SUM(count),0) AS total FROM partner_messages WHERE sender_id=? AND day=?',
+                           (sender_id, day)).fetchone()['total']
+        if total >= 20:
+            return 'daily_limit'
+        count = db.execute('SELECT count FROM partner_messages WHERE sender_id=? AND recipient_id=? AND day=?',
+                           (sender_id, recipient_id, day)).fetchone()
+        if count and count['count'] >= 5:
+            return 'limit'
+        db.execute('INSERT INTO partner_messages(sender_id,recipient_id,day,count) VALUES(?,?,?,1) '
+                   'ON CONFLICT(sender_id,recipient_id,day) DO UPDATE SET count=count+1',
+                   (sender_id, recipient_id, day))
+    return 'ok'
 
 
 def ai_messages_today(tg_id: int, day: str, path: Path = DB_PATH) -> int:

@@ -36,7 +36,7 @@ from core import (INTERESTS, POINTS, REGIONS, achievements_for, add_achievement,
                   due_notifications, end_ai_session, ensure_user, get_ai_session, get_event, get_user, import_events,
                   init_db, is_tracked, leaderboard, mark_admin_delivered, mark_review_notified, mark_sent,
                   matches, pending_achievement, pending_review_notice, pending_review_notifications, pending_reviews_for,
-                  recommended, remember_name, review_achievement,
+                  partner_users, recommended, remember_name, reserve_partner_message, review_achievement,
                   save_ai_session, subscribers_for, track, tracked_ids, update_user, use_ai_message)
 from services import MaxAPI, MaxAPIError, ai_answer, russian_ssl
 local_token = importlib.import_module('max_token') if importlib.util.find_spec('max_token') else None
@@ -336,13 +336,128 @@ async def profile(uid):
             f'📍 <b>Регион:</b> {bezopasniy_tekst(user["region"] or "-")}\n\n'
             f'🎯 <b>Интересы:</b> {bezopasniy_tekst(", ".join(user["interests"]) or "-")}\n\n'
             f'🏫 <b>Школа:</b> {bezopasniy_tekst(user["school"] or "-")}\n'
-            f'🔔 <b>Уведомления:</b> {"включены ✅" if user["notifications"] else "выключены ⏸️"}')
+            f'🔔 <b>Уведомления:</b> {"включены ✅" if user["notifications"] else "выключены ⏸️"}\n'
+            f'🤝 <b>Поиск напарника:</b> {"виден другим ✅" if user["partner_public"] else "скрыт 🔒"}')
     rows = [[knopka('🎂 Возраст', 'field:age'), knopka('🎓 Класс', 'field:grade')],
             [knopka('📍 Регион', 'field:region'), knopka('🎯 Интересы', 'field:interests')],
             [knopka('🏫 Изменить школу', 'school'), knopka('🔔 Уведомления', 'notifications')],
+            [knopka('🤝 Найти напарника', 'partner_search')],
+            [knopka('⚙️ Настройки поиска', 'partner_settings')],
             [ssylka('💬 Поддержка', SUPPORT_URL) if SUPPORT_URL else knopka('💬 Поддержка', 'support')],
             [knopka('🗑 Удалить мои данные', 'delete_prompt')]]
     return await send(uid, text, knopki_ekrana(rows, back='home'), 'profile')
+
+async def partner_settings(uid, edit=None):
+    user = get_user(uid)
+    visible = bool(user and user['partner_public'])
+    text = ('<b>⚙️ Настройки поиска напарника</b>\n\n'
+            'Когда поиск включён, другие участники увидят твоё имя из MAX, '
+            'класс, интересы и школу. Они смогут написать тебе через бота.\n\n'
+            f'<b>Сейчас:</b> {"можно найти и написать ✅" if visible else "профиль скрыт 🔒"}')
+    rows = [[knopka('🔒 Скрыть меня' if visible else '✅ Разрешить писать мне', 'partner_toggle')]]
+    return await send(uid, text, knopki_ekrana(rows, back='profile'), 'profile', edit=edit)
+
+
+async def partner_filters(uid, edit=None):
+    filters = sostoyanie(uid).setdefault('partner_filters', {'grade': None, 'interests': []})
+    grade = filters['grade']
+    interests = filters['interests']
+    text = ('<b>🤝 Найти напарника</b>\n\n'
+            'Сначала выбери класс и интересы, затем нажми «Показать».\n\n'
+            f'🎓 <b>Класс:</b> {grade or "любой"}\n'
+            f'🎯 <b>Интересы:</b> {bezopasniy_tekst(", ".join(interests) or "любые")}\n\n'
+            '<i>Если выбрано несколько интересов, подойдёт совпадение хотя бы по одному. '
+            'В списке только те, кто разрешил писать себе.</i>')
+    rows = [[knopka('🎓 Выбрать класс', 'partner_grades')],
+            [knopka('🎯 Выбрать интересы', 'partner_interests')],
+            [knopka('🔎 Показать участников', 'partner_show')]]
+    return await send(uid, text, knopki_ekrana(rows, back='profile'), 'profile', edit=edit)
+
+
+async def partner_grades(uid, edit=None):
+    chosen = sostoyanie(uid).setdefault('partner_filters', {'grade': None, 'interests': []})['grade']
+    rows = []
+    for grade in range(4, 12, 2):
+        rows.append([knopka(('✅ ' if chosen == number else '') + f'{number} класс',
+                            f'partner_grade:{number}') for number in (grade, grade + 1)])
+    rows.append([knopka('Любой класс', 'partner_grade:all')])
+    return await send(uid, '<b>🎓 Класс напарника</b>\n\nВыбери один класс или любой 👇',
+                      knopki_ekrana(rows, back='partner_search'), 'profile', edit=edit)
+
+
+async def partner_interests(uid, edit=None):
+    filters = sostoyanie(uid).setdefault('partner_filters', {'grade': None, 'interests': []})
+    chosen = filters['interests']
+    rows = []
+    for i in range(0, len(INTERESTS), 2):
+        rows.append([knopka(('✅ ' if INTERESTS[j] in chosen else '▫️ ') + INTERESTS[j],
+                            f'partner_interest:{j}') for j in range(i, min(i + 2, len(INTERESTS)))])
+    rows.append([knopka('Мои интересы', 'partner_interest:mine'),
+                 knopka('Сбросить', 'partner_interest:clear')])
+    rows.append([knopka('✅ Готово', 'partner_search')])
+    return await send(uid, '<b>🎯 Интересы напарника</b>\n\nОтметь нужные направления 👇',
+                      knopki_ekrana(rows, back='partner_search'), 'profile', edit=edit)
+
+
+async def partner_results(uid, page=0, edit=None):
+    filters = sostoyanie(uid).setdefault('partner_filters', {'grade': None, 'interests': []})
+    own = get_user(uid) or {}
+    own_interests = set(own.get('interests', []))
+    wanted = set(filters['interests'])
+    candidates = partner_users(uid)
+    people = [user for user in candidates
+              if (filters['grade'] is None or user['grade'] == filters['grade'])
+              and (not wanted or wanted.intersection(user['interests']))]
+    people.sort(key=lambda user: (-len(own_interests.intersection(user['interests'])),
+                                   abs((own.get('grade') or user['grade']) - user['grade']),
+                                   (user['display_name'] or '').casefold()))
+    last = max(0, (len(people) - 1) // PAGE)
+    page = max(0, min(page, last))
+    sostoyanie(uid)['partner_page'] = page
+    rows = [[knopka(f'👤 {(user["display_name"] or "Участник")[:40]} · {user["grade"]} кл.',
+                    f'partner_person:{user["tg_id"]}')]
+            for user in people[page * PAGE:(page + 1) * PAGE]]
+    if len(people) > PAGE:
+        rows.append([knopka('←', f'partner_page:{page-1}'),
+                     knopka(f'{page+1}/{last+1}', 'noop'),
+                     knopka('→', f'partner_page:{page+1}')])
+    body = (f'Нашлось участников: <b>{len(people)}</b>\n\nВыбери человека 👇' if people else
+            'По таким фильтрам никого не нашлось 😔\n\nПопробуй изменить класс или интересы.' if candidates else
+            'Пока никто не разрешил писать себе через бота 😔\n\nЗагляни сюда позже.')
+    return await send(uid, f'<b>🤝 Напарники</b>\n\n{body}',
+                      knopki_ekrana(rows, back='partner_search'), 'profile', edit=edit)
+
+
+async def partner_person(uid, person_id, edit=None):
+    person = get_user(person_id)
+    if person_id == uid or not person or not person['partner_public'] or not person['grade']:
+        return await partner_results(uid, sostoyanie(uid).get('partner_page', 0))
+    text = (f'<b>👤 {bezopasniy_tekst(person["display_name"] or "Участник")}</b>\n\n'
+            f'🎓 <b>Класс:</b> {person["grade"]}\n'
+            f'🎯 <b>Интересы:</b> {bezopasniy_tekst(", ".join(person["interests"]) or "не указаны")}\n'
+            f'🏫 <b>Школа:</b> {bezopasniy_tekst(person["school"] or "не указана")}\n\n'
+            '<i>Сообщение придёт через ОлимпНавигатор.</i>')
+    own = get_user(uid)
+    rows = [[knopka('✉️ Написать', f'partner_write:{person_id}')]] if own and own['partner_public'] else [
+            [knopka('🔒 Включить сообщения у себя', 'partner_settings')]]
+    return await send(uid, text, knopki_ekrana(rows, back=f'partner_page:{sostoyanie(uid).get("partner_page", 0)}'),
+                      'profile', edit=edit)
+
+
+async def partner_write(uid, person_id):
+    own = get_user(uid)
+    person = get_user(person_id)
+    if not own or not own['partner_public']:
+        return await partner_settings(uid)
+    if person_id == uid or not person or not person['partner_public']:
+        return await partner_results(uid, sostoyanie(uid).get('partner_page', 0))
+    st = sostoyanie(uid)
+    st['stage'] = 'partner_message'
+    st['partner_recipient'] = person_id
+    return await API.send(uid, f'<b>✉️ Сообщение для {bezopasniy_tekst(person["display_name"] or "участника")}</b>\n\n'
+                               'Напиши сообщение одним текстом. До 700 символов.\n'
+                               '<i>Можно отправить до 5 сообщений одному человеку и до 20 всего за день.</i>',
+                          knopki_ekrana(back=f'partner_person:{person_id}'))
 
 async def listing(uid, events, kind='events', page=0, edit=None):
     st = sostoyanie(uid)
@@ -726,7 +841,7 @@ async def callback_action(uid, action, mid=None):
         st.pop('ai_event', None)
         return await home(uid)
     sections = [item[1] for item in MENU]
-    card_navigation = action.startswith(('page:', 'open:', 'more:', 'tasks:', 'cal:', 'toggle:'))
+    card_navigation = action.startswith(('page:', 'open:', 'more:', 'tasks:', 'cal:', 'toggle:', 'partner_'))
     if action in sections or action in ('backlist', 'filters') or card_navigation:
         st['stage'] = None
     if action == 'noop':
@@ -754,6 +869,42 @@ async def callback_action(uid, action, mid=None):
     if action == 'profile':
         st['stage'] = None
         return await profile(uid)
+    if action == 'partner_settings':
+        return await partner_settings(uid)
+    if action == 'partner_toggle':
+        user = get_user(uid)
+        update_user(uid, partner_public=0 if user and user['partner_public'] else 1)
+        return await partner_settings(uid, mid)
+    if action == 'partner_search':
+        return await partner_filters(uid)
+    if action == 'partner_grades':
+        return await partner_grades(uid)
+    if action.startswith('partner_grade:'):
+        raw = action.partition(':')[2]
+        if raw == 'all' or raw.isdigit() and 4 <= int(raw) <= 11:
+            st.setdefault('partner_filters', {'grade': None, 'interests': []})['grade'] = None if raw == 'all' else int(raw)
+        return await partner_filters(uid, mid)
+    if action == 'partner_interests':
+        return await partner_interests(uid)
+    if action.startswith('partner_interest:'):
+        raw = action.partition(':')[2]
+        filters = st.setdefault('partner_filters', {'grade': None, 'interests': []})
+        if raw == 'mine':
+            filters['interests'] = (get_user(uid) or {}).get('interests', [])[:]
+        elif raw == 'clear':
+            filters['interests'] = []
+        elif raw.isdigit() and 0 <= int(raw) < len(INTERESTS):
+            name = INTERESTS[int(raw)]
+            filters['interests'] = [x for x in filters['interests'] if x != name] if name in filters['interests'] else filters['interests'] + [name]
+        return await partner_interests(uid, mid)
+    if action == 'partner_show':
+        return await partner_results(uid)
+    if action.startswith('partner_page:'):
+        return await partner_results(uid, int(action.partition(':')[2]), mid)
+    if action.startswith('partner_person:'):
+        return await partner_person(uid, int(action.partition(':')[2]), mid)
+    if action.startswith('partner_write:'):
+        return await partner_write(uid, int(action.partition(':')[2]))
     if action == 'portfolio':
         return await portfolio(uid)
     if action == 'assistant':
@@ -993,6 +1144,29 @@ async def message(uid, message):
         return await home(uid)
     if text == '/myid':
         return await send(uid, f'🪪 Твой MAX ID: <code>{uid}</code>', knopki_ekrana(back='profile'))
+    if st.get('stage') == 'partner_message':
+        person_id = st.get('partner_recipient')
+        if not text or text.startswith('/') or len(text) > 700:
+            return await send(uid, '✉️ Напиши сообщение одним текстом до 700 символов.',
+                              knopki_ekrana(back=f'partner_person:{person_id}'))
+        status = reserve_partner_message(uid, person_id, segodnya().isoformat())
+        if status != 'ok':
+            st['stage'] = None
+            info = ('Сегодня ты уже отправил этому участнику 5 сообщений. Попробуй завтра. ⏳' if status == 'limit'
+                    else 'На сегодня закончились 20 сообщений. Попробуй завтра. ⏳' if status == 'daily_limit'
+                    else 'Участник больше не принимает сообщения через бота. 😔')
+            return await send(uid, info, knopki_ekrana(back='partner_search'))
+        sender = get_user(uid) or {}
+        await API.send(person_id, f'<b>🤝 Сообщение от {bezopasniy_tekst(sender.get("display_name") or "участника")}</b>\n\n'
+                                  f'{bezopasniy_tekst(text)}\n\n'
+                                  '<i>Чтобы ответить, нажми кнопку ниже. Сообщения передаются через ОлимпНавигатор.</i>',
+                       knopki_ekrana([[knopka('↩️ Ответить', f'partner_write:{uid}'),
+                                      knopka('🔒 Настройки поиска', 'partner_settings')]], back='profile'))
+        st['stage'] = None
+        st.pop('partner_recipient', None)
+        return await send(uid, '✅ Сообщение отправлено напарнику.',
+                          knopki_ekrana([[knopka('✉️ Написать ещё', f'partner_write:{person_id}')]],
+                                        back=f'partner_person:{person_id}'))
     if text == '/import' and uid in ADMIN_IDS and attachments:
         file = next((a for a in attachments if a.get('type') == 'file'), None)
         url = ((file or {}).get('payload') or {}).get('url')
