@@ -142,6 +142,24 @@ def ssylka(label, url):
      return {'type': 'link', 'text': label[:128], 'url': url}
 
 
+def zadaniya_proshlyh_let(event):
+    event_id = event['id']
+    if event_id.startswith('olimpiada-'):
+        for item in event.get('preparation', []):
+            url = item.get('url', '')
+            if 'olimpiada.ru/activity/' in url and url.endswith('/tasks'):
+                return url
+    if event_id.startswith('msu-'):
+        return 'https://olymp.msu.ru/rus/page/main/29/page/zadaniya-olimpiady-proshlyh-let'
+    if event_id == 'hse-international-youth':
+        return 'https://olymp.hse.ru/inter/previous/'
+    if event_id == 'nto-school':
+        return 'https://ntcontest.ru/books/'
+    if event_id == 'urfu-olymps-vuzakadem-index':
+        return 'https://dovuz.urfu.ru/olymps/vuzakadem/materials'
+    return None
+
+
 def knopki_glavnoy():
   rows = []
   rows.append([knopka(*MENU[0])])
@@ -381,7 +399,21 @@ async def card(uid, eid, edit=None):
             [knopka('🔔 Отслеживаю' if tracked['participating'] else '🔔 Следить', f'toggle:part:{eid}'),
              knopka('⭐ Сохранено' if tracked['favorite'] else '⭐ Сохранить', f'toggle:fav:{eid}')],
             [knopka('📖 Подробнее', f'more:{eid}')]]
+    zadaniya = zadaniya_proshlyh_let(e)
+    rows.insert(1, [ssylka('📚 Задания прошлых лет', zadaniya)] if zadaniya else
+                [knopka('📚 Задания прошлых лет', f'tasks:{eid}')])
     return await send(uid, text, knopki_ekrana(rows, back='backlist'), 'events', edit=edit)
+
+async def tasks(uid, eid):
+    e = get_event(eid)
+    if not e:
+        return await home(uid)
+    text = (f'<b>📚 Задания прошлых лет</b>\n\n'
+            f'<b>{bezopasniy_tekst(e["title"][:100])}</b>\n\n'
+            'Пока не нашёл отдельный архив заданий для этого мероприятия. '
+            'Проверь материалы на сайте организатора.')
+    rows = [[ssylka('🌐 Сайт мероприятия', e['official_url'])]]
+    return await send(uid, text, knopki_ekrana(rows, back=f'open:{eid}'), 'events')
 
 async def more(uid, eid):
     e = get_event(eid)
@@ -626,7 +658,7 @@ async def callback_action(uid, action, mid=None):
         st.pop('ai_event', None)
         return await home(uid)
     sections = [item[1] for item in MENU]
-    card_navigation = action.startswith(('page:', 'open:', 'more:', 'toggle:'))
+    card_navigation = action.startswith(('page:', 'open:', 'more:', 'tasks:', 'toggle:'))
     if action in sections or action in ('backlist', 'filters') or card_navigation:
         st['stage'] = None
     if action == 'noop':
@@ -661,6 +693,8 @@ async def callback_action(uid, action, mid=None):
         return await card(uid, action.partition(':')[2])
     if action.startswith('more:'):
         return await more(uid, action.partition(':')[2])
+    if action.startswith('tasks:'):
+        return await tasks(uid, action.partition(':')[2])
     if action.startswith('toggle:'):
         _, what, eid = action.split(':', 2)
         if not get_event(eid):
