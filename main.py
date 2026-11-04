@@ -1029,7 +1029,8 @@ async def callback_action(uid, action, mid=None):
         st['stage'] = None
         if st.get('mode') == 'edit':
             return await profile(uid)
-        return await listing(uid, spisok_sobitiy(uid, 'events'))
+        st['mode'] = None
+        return await home(uid)
     if action.startswith(('fsub:', 'fkind:')) or action in ('fdue', 'ffit', 'freset'):
         o = st.setdefault('filters', {})
         if action == 'freset':
