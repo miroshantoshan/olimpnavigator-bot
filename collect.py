@@ -67,7 +67,8 @@ def base_event(event_id: str, title: str, kind: str, url: str, today: date) -> d
         "id": event_id, "title": title, "kind": kind, "subjects": [], "grades": [],
         "min_age": None, "max_age": None, "regions": ["Вся Россия"],
         "organizer": "См. источник", "format": "См. источник",
-        "registration_deadline": None, "stages": [], "result_date": None,
+        "registration_deadline": None, "qualification_deadline": None,
+        "stages": [], "result_date": None,
         "benefits": "Проверьте положение организатора",
         "eligibility": "Проверьте положение организатора",
         "description": "Условия и детали участия - по ссылке на источник.",
@@ -98,6 +99,7 @@ def collect_olimpiada(session: requests.Session, today: date) -> list[dict]:
             event["description"] = clean(desc.get_text(" ", strip=True))[:900] or event["description"]
         event["eligibility"] = clean(classes.get_text(" ", strip=True)) if classes else "Проверьте положение организатора"
         future = []
+        qualification_dates = []
         for marker in card.select(".tl_event[date]"):
             end = None
             with suppress(ValueError, OverflowError):
@@ -110,13 +112,19 @@ def collect_olimpiada(session: requests.Session, today: date) -> list[dict]:
                 continue
             title = marker.find("font")
             label = clean(title.get_text(" ", strip=True)) if title else clean(marker.get_text(" ", strip=True))
+            lower_label = label.casefold()
             if "регистрац" in label.casefold():
                 if not event["registration_deadline"] or end.isoformat() < event["registration_deadline"]:
                     event["registration_deadline"] = end.isoformat()
             elif "результат" in label.casefold():
                 event["result_date"] = start.isoformat()
-            elif start >= today:
-                future.append({"name": label[:90] or "Этап", "date": start.isoformat()})
+            else:
+                if any(word in lower_label for word in ("отбор", "квалификац", "заочн", "дистанционн")):
+                    qualification_dates.append(end.isoformat())
+                if end >= today:
+                    future.append({"name": label[:90] or "Этап", "date": start.isoformat(),
+                                   "end_date": end.isoformat()})
+        event["qualification_deadline"] = max(qualification_dates) if qualification_dates else None
         event["stages"] = future[:8]
         if not (event["registration_deadline"] or event["stages"] or event["result_date"]):
             continue

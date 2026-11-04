@@ -560,6 +560,19 @@ async def more(uid, eid):
 
 def knopki_filtrov(uid):
     o = sostoyanie(uid).setdefault('filters', {})
+    subject = INTERESTS[o['subject']] if isinstance(o.get('subject'), int) and 0 <= o['subject'] < len(INTERESTS) else 'любой'
+    kind = KINDS[o['kind']] if isinstance(o.get('kind'), int) and 0 <= o['kind'] < len(KINDS) else 'любой'
+    return knopki_ekrana([
+        [knopka(f'🎯 Предмет: {subject}', 'filter_subjects')],
+        [knopka(f'🏆 Тип: {kind}', 'filter_kinds')],
+        [knopka(('✅ ' if o.get('due') else '▫️ ') + 'Будущие сроки', 'fdue'),
+         knopka(('✅ ' if o.get('fit') else '▫️ ') + 'Подходит мне', 'ffit')],
+        [knopka('🔎 Показать', 'fapply'), knopka('🧹 Сбросить', 'freset')],
+    ], back='favorites' if o.get('scope') == 'favorites' else 'home')
+
+
+def knopki_predmetov(uid):
+    o = sostoyanie(uid).setdefault('filters', {})
     rows = []
     for i in range(0, len(INTERESTS), 2):
         row = []
@@ -567,13 +580,18 @@ def knopki_filtrov(uid):
             icon = '✅ ' if o.get('subject') == j else '▫️ '
             row.append(knopka(icon + INTERESTS[j], f'fsub:{j}'))
         rows.append(row)
+    rows.append([knopka('🧹 Любой предмет', 'fsub:all')])
+    return knopki_ekrana(rows, back='filters')
+
+
+def knopki_tipov(uid):
+    o = sostoyanie(uid).setdefault('filters', {})
+    rows = []
     for i in range(len(KINDS)):
         icon = '✅ ' if o.get('kind') == i else '▫️ '
         rows.append([knopka(icon + KINDS[i].capitalize(), f'fkind:{i}')])
-    rows += [[knopka(('✅ ' if o.get('due') else '▫️ ') + 'Будущие сроки', 'fdue'),
-              knopka(('✅ ' if o.get('fit') else '▫️ ') + 'Подходит мне', 'ffit')],
-             [knopka('🔎 Показать', 'fapply'), knopka('Сбросить', 'freset')]]
-    return knopki_ekrana(rows, back='favorites' if o.get('scope') == 'favorites' else 'home')
+    rows.append([knopka('🧹 Любой тип', 'fkind:all')])
+    return knopki_ekrana(rows, back='filters')
 
 async def filters(uid, scope='search', edit=None):
     o = sostoyanie(uid).setdefault('filters', {})
@@ -582,6 +600,16 @@ async def filters(uid, scope='search', edit=None):
     return await send(uid, f'<b>{title}</b>\n\n🎯 <b>Предмет</b> · 🏆 <b>тип события</b> · ⏰ <b>сроки</b>\n\n'
                                 '<i>Отметь нужное и нажми «Показать» 👇</i>',
                            knopki_filtrov(uid), scope if scope in BANNERS else 'search', edit=edit)
+
+
+async def filter_subjects(uid, edit=None):
+    return await send(uid, '<b>🎯 Выбери предмет</b>\n\nМожно выбрать один предмет.',
+                      knopki_predmetov(uid), 'search', edit=edit)
+
+
+async def filter_kinds(uid, edit=None):
+    return await send(uid, '<b>🏆 Выбери тип мероприятия</b>',
+                      knopki_tipov(uid), 'search', edit=edit)
 
 def sobytiya_kalendarya(events, today):
     found = []
@@ -859,6 +887,10 @@ async def callback_action(uid, action, mid=None):
         return await filters(uid)
     if action == 'filters':
         return await filters(uid, st.get('list_kind', 'search') if st.get('list_kind') == 'favorites' else 'search')
+    if action == 'filter_subjects':
+        return await filter_subjects(uid, mid)
+    if action == 'filter_kinds':
+        return await filter_kinds(uid, mid)
     if action == 'deadlines':
         return await deadlines(uid)
     if action == 'cal:all':
@@ -890,14 +922,16 @@ async def callback_action(uid, action, mid=None):
         return await partner_interests(uid)
     if action.startswith('partner_interest:'):
         raw = action.partition(':')[2]
-        filters = st.setdefault('partner_filters', {'grade': None, 'interests': []})
+        partner_filter_state = st.setdefault('partner_filters', {'grade': None, 'interests': []})
         if raw == 'mine':
-            filters['interests'] = (get_user(uid) or {}).get('interests', [])[:]
+            partner_filter_state['interests'] = (get_user(uid) or {}).get('interests', [])[:]
         elif raw == 'clear':
-            filters['interests'] = []
+            partner_filter_state['interests'] = []
         elif raw.isdigit() and 0 <= int(raw) < len(INTERESTS):
             name = INTERESTS[int(raw)]
-            filters['interests'] = [x for x in filters['interests'] if x != name] if name in filters['interests'] else filters['interests'] + [name]
+            partner_filter_state['interests'] = ([x for x in partner_filter_state['interests'] if x != name]
+                                                 if name in partner_filter_state['interests']
+                                                 else partner_filter_state['interests'] + [name])
         return await partner_interests(uid, mid)
     if action == 'partner_show':
         return await partner_results(uid)
@@ -1007,11 +1041,18 @@ async def callback_action(uid, action, mid=None):
         else:
             field, raw = action.split(':')
             key = 'subject' if field == 'fsub' else 'kind'
+            if raw == 'all':
+                o[key] = None
+                return await (filter_subjects(uid, mid) if key == 'subject' else filter_kinds(uid, mid))
             i = int(raw)
             limit = len(INTERESTS) if key == 'subject' else len(KINDS)
             if not 0 <= i < limit:
                 return
             o[key] = None if o.get(key) == i else i
+        if action.startswith('fsub:'):
+            return await filter_subjects(uid, mid)
+        if action.startswith('fkind:'):
+            return await filter_kinds(uid, mid)
         return await filters(uid, st['filters'].get('scope', 'search'), mid)
     if action == 'fapply':
         o = st.get('filters', {})

@@ -249,6 +249,7 @@ def validate_event(raw: dict) -> dict:
     if missing:
         raise ValueError("Нет полей: " + ", ".join(sorted(missing)))
     event = {k: raw[k] for k in EVENT_FIELDS}
+    event["qualification_deadline"] = raw.get("qualification_deadline")
     event["rsosh_level"] = raw.get("rsosh_level")
     if event["rsosh_level"] is not None and (type(event["rsosh_level"]) is not int or event["rsosh_level"] not in (0, 1, 2, 3)):
         raise ValueError("rsosh_level: нужен 0, 1, 2, 3 или null")
@@ -274,7 +275,7 @@ def validate_event(raw: dict) -> dict:
         raise ValueError("min_age больше max_age")
     event["official_url"] = _url(event["official_url"], "official_url")
     event["source_url"] = _url(event["source_url"], "source_url")
-    for field in ("registration_deadline", "result_date", "checked_at"):
+    for field in ("registration_deadline", "qualification_deadline", "result_date", "checked_at"):
         event[field] = _date(event[field], field)
     if not event["checked_at"]:
         raise ValueError("checked_at обязателен")
@@ -284,6 +285,8 @@ def validate_event(raw: dict) -> dict:
         if not isinstance(stage, dict) or not isinstance(stage.get("name"), str) or not stage["name"].strip():
             raise ValueError("stages: у каждого этапа нужно имя")
         stage["date"] = _date(stage.get("date"), "stages.date")
+        if "end_date" in stage:
+            stage["end_date"] = _date(stage.get("end_date"), "stages.end_date")
     if not isinstance(event["preparation"], list):
         raise ValueError("preparation: список")
     for material in event["preparation"]:
@@ -312,6 +315,7 @@ def import_events(items: list, path: Path = DB_PATH) -> tuple[int, int, list[tup
             if old:
                 updated += 1
                 for key, label in (("registration_deadline", "срок регистрации"),
+                                   ("qualification_deadline", "срок отборочного этапа"),
                                    ("stages", "этапы"), ("result_date", "дата результатов"),
                                    ("rsosh_level", "уровень РСОШ")):
                     if old.get(key) != item.get(key):
@@ -352,13 +356,33 @@ def create_custom_event(tg_id: int, title: str, kind: str, path: Path = DB_PATH)
     return event_id
 
 
-def all_events(path: Path = DB_PATH) -> list[dict]:
+def event_is_active(event: dict, today: date | None = None) -> bool:
+    if event.get("custom") or event.get("kind") != "олимпиада":
+        return True
+    current_day = (today or date.today()).isoformat()
+    cutoff = event.get("qualification_deadline")
+    if not cutoff:
+        dates = []
+        for stage in event.get("stages", []):
+            name = str(stage.get("name", "")).casefold()
+            if any(word in name for word in ("отбор", "квалификац", "заочн", "дистанционн")):
+                day = stage.get("end_date") or stage.get("date")
+                if day:
+                    dates.append(day)
+        cutoff = max(dates) if dates else None
+    if cutoff:
+        return cutoff >= current_day
+    registration = event.get("registration_deadline")
+    return not registration or registration >= current_day
+
+
+def all_events(path: Path = DB_PATH, today: date | None = None) -> list[dict]:
     with connect(path) as db:
         rows = db.execute("SELECT payload FROM events").fetchall()
     events = []
     for row in rows:
         event = json.loads(row['payload'])
-        if not event.get('custom'):
+        if not event.get('custom') and event_is_active(event, today):
             events.append(event)
     return events
 
